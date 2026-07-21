@@ -1,7 +1,7 @@
 # Roadmap triển khai API Gateway Go-native
 
 - Ngày: 2026-07-21
-- Trạng thái: Baseline đã duyệt; chờ review văn bản
+- Trạng thái: Đã được duyệt
 - Chiến lược: Risk-first vertical slices
 
 ## 1. Mục đích
