@@ -1,8 +1,10 @@
 # Thiết kế API Gateway Go-native
 
 - Ngày: 2026-07-21
-- Trạng thái: Đã được duyệt
-- Phạm vi: Vertical slice production tối thiểu
+- Trạng thái: North-star architecture đã được duyệt
+- Phạm vi: Kiến trúc mục tiêu qua nhiều delivery phase
+
+Roadmap triển khai được quản lý tại [go-native-api-gateway-phase-roadmap-design.md](2026-07-21-go-native-api-gateway-phase-roadmap-design.md). Tài liệu này định nghĩa các invariant và trạng thái đích; không được dùng trực tiếp như một implementation plan duy nhất.
 
 ## 1. Bối cảnh
 
@@ -28,7 +30,7 @@ Thiết kế không sao chép Lua runtime, Nginx phase model hoặc Admin API sc
 - REST Admin API là giao diện cấu hình chính.
 - Plugin v1 là built-in Go code compile cùng data-plane binary.
 - Data plane không truy cập trực tiếp etcd.
-- Cấu hình đến các data plane connected và healthy với p99 không quá một giây.
+- Configuration convergence lag của các data plane connected và healthy có p99 không quá một giây.
 - Design envelope là 100.000 route, 1.000 data-plane instance và 100 configuration update mỗi giây.
 
 ### 2.2. Mục tiêu hiệu năng
@@ -285,6 +287,8 @@ ACK/NACK chứa:
 - structured error hoặc warning.
 
 Rollout API tổng hợp pending, building, active, nacked và offline. SLO p99 không quá một giây chỉ áp dụng cho DP connected và healthy; DP offline không làm Admin API treo.
+
+SLO đo convergence lag, không yêu cầu mọi revision trung gian đều được kích hoạt. Khi update liên tục và CP coalesce revision, phép đo dùng thời gian từ latest desired revision tại CP đến lúc DP kích hoạt target revision tương ứng. Revision trung gian bị coalesce không được tính là activation failure.
 
 ## 7. Data-plane request pipeline
 
@@ -648,7 +652,7 @@ V1 hoàn thành khi chứng minh end-to-end:
 
 - tất cả correctness, integration, race và chaos gates đạt;
 - comparative benchmark gates đạt;
-- config activation p99 không quá một giây với 1.000 connected DP và 100 update/giây;
+- configuration convergence lag p99 không quá một giây với 1.000 connected DP và 100 update/giây;
 - CP/etcd outage không làm gián đoạn traffic đang dùng snapshot hợp lệ;
 - memory đạt steady state và không tăng theo số revision.
 
@@ -662,6 +666,7 @@ V1 hoàn thành khi chứng minh end-to-end:
 6. Built-in Go plugins trong v1.
 7. Linux container, Kubernetes-first nhưng portable.
 8. REST Admin API là configuration interface chính.
-9. Config activation p99 không quá một giây.
+9. Configuration convergence lag p99 không quá một giây; revision trung gian có thể được coalesce.
 10. Design envelope 100.000 route, 1.000 DP và 100 update/giây.
 11. Go net/http là HTTP foundation; thay engine chỉ dựa trên benchmark và ADR.
+12. Delivery dùng bảy risk-first vertical phase; mỗi phase có spec, plan, implementation và verification riêng.
