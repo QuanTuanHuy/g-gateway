@@ -512,41 +512,46 @@ Khi shutdown:
 6. flush bounded telemetry trong giới hạn;
 7. thoát khi hết deadline.
 
-## 14. Module boundaries
+## 14. Module map và seams
 
-    cmd/gateway-cp
-      control/admin
-      control/auth
-      control/store
-      control/validation
-      control/distribution
+    cmd/
+      gateway-cp
+      gateway-dp
 
-    cmd/gateway-dp
-      dataplane/listener
-      dataplane/snapshot
-      dataplane/router
-      dataplane/plugin
-      dataplane/upstream
-      dataplane/proxy
-      dataplane/telemetry
-
-    shared
-      api/admin
-      api/distribution
-      model
+    internal/
+      config
       configcodec
+      model
+      gateway
+      snapshot
+      router
+      plugin
+      upstream
+      proxy
+      telemetry
+      controlplane/
+        admin
+        auth
+        store
+        validation
+        distribution
+
+    api/
+      admin
+      distribution
 
 Dependency rules:
 
-- model và API contracts không phụ thuộc CP/DP;
+- internal/model và versioned wire contracts không phụ thuộc CP/DP implementations;
 - CP không import data-plane implementation;
 - DP không import etcd client;
 - router không biết Admin API hoặc distribution transport;
 - plugin không truy cập global mutable configuration;
 - proxy nhận runtime objects đã resolve;
 - telemetry nhận structured events và không sở hữu request flow.
+- Không tạo package shared, common hoặc utils; mỗi Module phải có domain owner rõ.
 
-Interface chỉ đặt tại boundary cần thay thế: config store, distribution transport, secret provider, load-balancing policy, plugin và telemetry exporter. Không tạo interface cho mọi struct.
+Seam chỉ đặt tại nơi behavior thực sự thay đổi: config store, distribution transport, secret provider, load-balancing policy, plugin và telemetry exporter. Không tạo Go interface cho mọi Module hoặc khi chỉ có một Adapter.
 
 ## 15. Testing
 

@@ -63,7 +63,7 @@ Kết quả Phase 1 là nền móng production code, không phải prototype b�
 - Service discovery.
 - Production performance certification.
 
-## 4. Runtime components
+## 4. Runtime modules
 
 Phase 1 tạo hai executable:
 
@@ -72,28 +72,39 @@ Phase 1 tạo hai executable:
 
 gateway-dp được chia theo trách nhiệm:
 
+    internal/gateway
     internal/config
-    internal/listener
+    internal/model
     internal/proxy
-    internal/transport
+    internal/upstream
     internal/telemetry
-    internal/lifecycle
+    internal/testupstream
 
-### 4.1. config
+### 4.1. gateway
+
+- Sở hữu HTTP, HTTPS và admin servers.
+- Sở hữu startup order, readiness state và graceful shutdown.
+- Cấu hình TLS/ALPN và request-level server limits.
+- Xử lý SIGINT/SIGTERM.
+- Không chứa request normalization, route matching hoặc upstream policy.
+
+Startup, listeners và shutdown nằm cùng một Module vì chúng có chung invariants và luôn thay đổi cùng nhau. Không tạo các Module listener/lifecycle chỉ để chuyển tiếp lời gọi.
+
+### 4.2. config
 
 - Đọc một YAML file khi startup.
 - Strict-decode và từ chối unknown fields.
-- Validate IDs, references, listener addresses, durations, limits và TLS files.
+- Tách phần process bootstrap khỏi canonical resources sau khi decode.
+- Validate listener addresses, durations, limits, TLS files, resource IDs và references.
 - Không watch hoặc reload file.
 
-### 4.2. listener
+### 4.3. model
 
-- Tạo HTTP, HTTPS và admin servers.
-- Cấu hình TLS/ALPN cho HTTP/2.
-- Áp dụng request header/time limits.
-- Không chứa routing hoặc proxy policy.
+- Sở hữu canonical Route và Upstream types.
+- Không phụ thuộc YAML, files, listeners hoặc Docker.
+- Được tái sử dụng khi Phase 2 thêm RuntimeSnapshot và Phase 4 thêm control plane.
 
-### 4.3. proxy
+### 4.4. proxy
 
 - Normalize và validate inbound request.
 - Match exact route.
@@ -101,35 +112,43 @@ gateway-dp được chia theo trách nhiệm:
 - Dùng httputil.ReverseProxy làm proxy correctness baseline.
 - Map internal/upstream failures thành stable client errors.
 
-### 4.4. transport
+### 4.5. upstream
 
-- Sở hữu một shared http.Transport.
+- Sở hữu configured endpoint và một shared http.Transport.
 - Chỉ bật HTTP/1.1 tới upstream.
 - Quản lý keepalive pool, dial timeout và response-header timeout.
 - Không retry hoặc health-check.
 
-### 4.5. telemetry
+Tên Module là upstream thay vì transport vì http.Transport chỉ là Implementation detail. Phase 3 mở rộng cùng Module bằng endpoint selection, health, balancing và retry.
+
+### 4.6. telemetry
 
 - Cung cấp liveness, readiness và Prometheus metrics.
 - Không điều khiển request flow.
 - Cho phép tắt per-request metrics trong proxy-only benchmark.
 
-### 4.6. lifecycle
+### 4.7. Module depth và seams
 
-- Điều phối startup theo fail-fast order.
-- Chuyển readiness trong startup/shutdown.
-- Xử lý SIGINT/SIGTERM.
-- Drain traffic và đóng idle upstream connections.
+- cmd/gateway-dp chỉ là composition root; không chứa business behavior.
+- Không tạo package shared, common hoặc utils.
+- Không tạo Go interface chỉ vì có một Module.
+- Một Adapter duy nhất dùng concrete dependency.
+- Chỉ thêm Seam khi có ít nhất hai Adapter thật hoặc behavior cần thay tại đúng Seam đó.
+- Tests ưu tiên đi qua cùng Interface mà caller production sử dụng.
+
+internal/testupstream sở hữu correctness-upstream behavior; cmd/test-upstream chỉ parse process arguments và chạy Module đó.
 
 Dependency chính:
 
-    bootstrap
+    cmd/gateway-dp
       -> config
-      -> transport
-      -> proxy
-      -> listener
+      -> gateway
+           -> proxy
+                -> model
+                -> upstream
+           -> telemetry
 
-telemetry quan sát các component nhưng không được trở thành dependency của proxy correctness.
+config phụ thuộc model để tạo canonical resources. telemetry quan sát các Module nhưng không được trở thành dependency của proxy correctness.
 
 ## 5. Static configuration
 
@@ -174,6 +193,13 @@ Phase 1 dùng canonical-shaped YAML:
           idle_connection_timeout: 90s
           max_idle_connections: 1024
           max_idle_connections_per_host: 1024
+
+Một YAML document không đồng nghĩa một internal config type:
+
+- BootstrapConfig chứa listeners, TLS file paths, server limits, telemetry và shutdown settings.
+- model.ResourceSet chứa Route và Upstream resources.
+
+config Module decode một lần rồi trả hai cấu trúc này. Phase 2 có thể thay nguồn ResourceSet bằng RuntimeSnapshot mà không thay BootstrapConfig hoặc gateway lifecycle.
 
 Validation rules:
 
@@ -394,6 +420,8 @@ Services:
 
 gateway-go và apisix dùng mutually exclusive Compose profiles. Cả hai nhận cùng network alias gateway khi active.
 
+Benchmark harness là black-box Module. Nó không import internal Go packages của gateway và chỉ tương tác qua Docker processes, configuration files, HTTP traffic, health endpoints và result files. gateway-go và apisix là hai Adapter thật tại cùng target Seam.
+
 Một benchmark run:
 
 1. xác nhận APISIX source path và commit;
@@ -592,7 +620,7 @@ Phase 2 chỉ bắt đầu sau Phase 1 acceptance.
 Các contract được giữ:
 
 - request normalization policy;
-- listener and transport boundaries;
+- gateway lifecycle và upstream Module responsibilities;
 - stable error codes;
 - benchmark scenario/result formats;
 - static canonical resource shape.
