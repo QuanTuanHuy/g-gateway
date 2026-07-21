@@ -77,6 +77,8 @@ Mỗi phase phải:
 
 ## 5. Phase 1 — Proxy baseline và benchmark harness
 
+Design spec: [Phase 1 — Proxy baseline và benchmark harness](2026-07-22-phase-1-proxy-baseline-benchmark-design.md)
+
 ### 5.1. Mục tiêu
 
 Chứng minh net/http là correctness foundation khả thi và thiết lập benchmark đối chiếu APISIX có thể tái lập.
@@ -109,8 +111,9 @@ Chứng minh net/http là correctness foundation khả thi và thiết lập ben
 - Request/response streaming không buffer toàn body.
 - Graceful shutdown không nhận request mới và drain request đang chạy.
 - Benchmark một route, không plugin, có và không TLS chạy tái lập được.
-- Median throughput không thấp hơn APISIX và p99 không lớn hơn 110% APISIX trong baseline workload.
-- Nếu không đạt, profiling xác định bottleneck và tạo ADR trước khi tiếp tục.
+- Trên môi trường Docker Desktop tạm thời, correctness và benchmark reproducibility là blocking gates; parity với APISIX được ghi nhận dưới trạng thái provisional.
+- Nếu provisional parity không đạt, lưu profiling và phân tích bottleneck nhưng không đổi HTTP engine chỉ dựa trên Docker Desktop.
+- Parity gate chính thức phải được chạy lại trên dedicated Linux environment trước production certification.
 
 ## 6. Phase 2 — Runtime snapshot và router kernel
 
