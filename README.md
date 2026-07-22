@@ -21,7 +21,10 @@ Phase 1 intentionally excludes dynamic configuration, multiple routes/upstreams,
 ```text
 cmd/gateway-dp       production data-plane composition root
 cmd/test-upstream    deterministic correctness upstream
+cmd/bench-report     black-box deterministic benchmark summarizer
+bench                isolated APISIX/Go comparison harness and schemas
 configs              versioned example configuration
+internal/benchreport raw-evidence parser, aggregation, and verdicts
 internal/config      strict bootstrap/resource decoding and validation
 internal/model       canonical route and upstream resources
 internal/upstream    pooled outbound transport runtime
@@ -62,11 +65,12 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.5-bookworm sh -c \
   'test -z "$(gofmt -l .)" && go vet ./... && go test ./... -race -count=1 && go build ./cmd/...'
 ```
 
-Build either executable from the same multi-stage Dockerfile:
+Build all three executables from the same multi-stage Dockerfile:
 
 ```bash
 docker build --build-arg COMMAND=gateway-dp -t g-gateway:phase1 .
 docker build --build-arg COMMAND=test-upstream -t g-gateway-test-upstream:phase1 .
+docker build --build-arg COMMAND=bench-report -t g-gateway-bench-report:phase1 .
 ```
 
 The runtime image is distroless and runs as its predefined non-root user. Mount the gateway config and certificate files read-only when starting `gateway-dp`:
@@ -80,3 +84,9 @@ docker run --rm \
 ```
 
 Startup, listener, and shutdown events are JSON logs. Invalid configuration, bind failures, unexpected listener termination, or unsuccessful shutdown return a non-zero process exit code.
+
+## Benchmark and operations
+
+The [benchmark guide](bench/README.md) documents pinned APISIX/wrk/h2load inputs, smoke and compare commands, raw artifact contracts, verdicts, and cleanup. The [Phase 1 operational runbook](docs/operations/phase-1-runbook.md) covers startup validation, readiness, graceful drain, failure response, and profiling after a provisional parity miss.
+
+Docker Desktop benchmark results are deliberately `provisional`. A miss does not fail Phase 1 or justify changing the HTTP engine; official parity requires the dedicated Linux rerun planned for Phase 7.

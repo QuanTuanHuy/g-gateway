@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0.0",
+  "environment_class": "provisional",
+  "verdict": "provisional_miss",
+  "comparisons": [
+    {
+      "scenario": "h1-clear",
+      "payload_bytes": 1024,
+      "generator": "wrk",
+      "protocol": "http/1.1",
+      "tls": false,
+      "verdict": "provisional_miss",
+      "reasons": ["Go median throughput is below APISIX"],
+      "direct": {
+        "requests_per_second": 250000,
+        "required_headroom_factor": 1.25,
+        "headroom_ratio": 7.5
+      },
+      "go": {
+        "run_count": 5,
+        "median_requests_per_second": 30000,
+        "median_transfer_bytes_per_second": 37600000,
+        "median_p50_us": 450,
+        "median_p95_us": 1100,
+        "median_p99_us": 1400,
+        "requests": 1500000,
+        "request_errors": 0,
+        "timeouts": 0,
+        "non_2xx": 0,
+        "error_rate": 0
+      },
+      "apisix": {
+        "run_count": 5,
+        "median_requests_per_second": 33333,
+        "median_transfer_bytes_per_second": 42400000,
+        "median_p50_us": 470,
+        "median_p95_us": 900,
+        "median_p99_us": 1250,
+        "requests": 1666650,
+        "request_errors": 0,
+        "timeouts": 0,
+        "non_2xx": 0,
+        "error_rate": 0
+      }
+    }
+  ]
+}

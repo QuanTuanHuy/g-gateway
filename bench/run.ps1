@@ -413,6 +413,9 @@ function Invoke-BenchmarkMeasurement {
         [Parameter(Mandatory = $true)]
         [int] $DurationSeconds,
 
+        [Parameter(Mandatory = $true)]
+        [int] $WarmupSeconds,
+
         [switch] $ForceHTTP1
     )
 
@@ -445,7 +448,11 @@ function Invoke-BenchmarkMeasurement {
         $streams = [int]$ScenarioDefinition.settings.streams_per_client
         $requestLogRelative = "$RelativeDirectory/requests.tsv"
         $h1 = if ($ForceHTTP1) { '--h1 ' } else { '' }
-        $command = "h2load ${h1}-t$threads -c$clients -m$streams -D${DurationSeconds}s --connection-inactivity-timeout=30s --log-file='/results/$requestLogRelative' --output-file='/results/$structuredRelative' '$Url' >'/results/$stdoutRelative' 2>'/results/$stderrRelative'"
+        # h2load writes one record per request. Writing that stream directly to a
+        # Docker Desktop bind mount throttles the generator and invalidates the
+        # direct-control headroom check. Measure on the container filesystem,
+        # then copy the completed evidence to the mounted results directory.
+        $command = "h2load ${h1}-t$threads -c$clients -m$streams -D${DurationSeconds}s --warm-up-time=${WarmupSeconds}s --connection-inactivity-timeout=30s --log-file='/tmp/requests.tsv' --output-file='/tmp/generator.json' '$Url' >'/tmp/stdout.log' 2>'/tmp/stderr.log'; benchmark_status=`$?; chmod 0644 /tmp/requests.tsv /tmp/generator.json /tmp/stdout.log /tmp/stderr.log; cp /tmp/requests.tsv '/results/$requestLogRelative' && cp /tmp/generator.json '/results/$structuredRelative' && cp /tmp/stdout.log '/results/$stdoutRelative' && cp /tmp/stderr.log '/results/$stderrRelative'; copy_status=`$?; if [ `$benchmark_status -ne 0 ]; then exit `$benchmark_status; fi; exit `$copy_status"
         Invoke-GeneratorShell -ComposeFile $ComposeFile -Generator h2load -Command $command
         $structured = Get-Content -LiteralPath (Join-Path $hostDirectory 'generator.json') -Raw | ConvertFrom-Json
         $measurement = $structured.measurements
@@ -706,12 +713,20 @@ try {
             }
 
             $forceHTTP1 = $definition.protocol -eq 'http/1.1'
+            $directDefinition = [PSCustomObject]@{
+                generator = [string]$definition.generator
+                protocol  = 'http/1.1'
+                tls       = $false
+                settings  = $definition.settings
+            }
             $directUrl = "http://upstream-performance:8080/bytes/$payloadBytes"
             Write-Output "Direct control: scenario=$scenarioName payload_bytes=$payloadBytes"
-            Invoke-GeneratorWarmup -ComposeFile $composeFile -ScenarioDefinition $definition -Url $directUrl -DurationSeconds ([int]$modeDefinition.warmup_seconds) -ForceHTTP1:$forceHTTP1
-            $directMeasurement = Invoke-BenchmarkMeasurement -ComposeFile $composeFile -ResultsDirectory $ResultsDir -RelativeDirectory "controls/$scenarioName/$payloadBytes/run-1" -ScenarioDefinition $definition -Url $directUrl -DurationSeconds ([int]$modeDefinition.duration_seconds) -ForceHTTP1:$forceHTTP1
+            if ($definition.generator -eq 'wrk') {
+                Invoke-GeneratorWarmup -ComposeFile $composeFile -ScenarioDefinition $directDefinition -Url $directUrl -DurationSeconds ([int]$modeDefinition.warmup_seconds) -ForceHTTP1
+            }
+            $directMeasurement = Invoke-BenchmarkMeasurement -ComposeFile $composeFile -ResultsDirectory $ResultsDir -RelativeDirectory "controls/$scenarioName/$payloadBytes/run-1" -ScenarioDefinition $directDefinition -Url $directUrl -DurationSeconds ([int]$modeDefinition.duration_seconds) -WarmupSeconds ([int]$modeDefinition.warmup_seconds) -ForceHTTP1
             $directRequestsPerSecond = [double]$directMeasurement.Metrics.requests_per_second
-            Write-RawRun -RepositoryCommit $repositoryCommit -ApisixCommit $apisix.Commit -TargetName direct -TargetVersion 'nginx-1.31.3-alpine' -TargetImageID $upstreamImageID -UpstreamImageID $upstreamImageID -GeneratorImageID $generatorImageIDs[[string]$definition.generator] -ScenarioName $scenarioName -ScenarioDefinition $definition -PayloadBytes $payloadBytes -ModeDefinition $modeDefinition -Repetition 1 -DirectRequestsPerSecond $directRequestsPerSecond -HeadroomFactor $headroomFactor -EnvironmentMetadata $environmentMetadata -Measurement $directMeasurement
+            Write-RawRun -RepositoryCommit $repositoryCommit -ApisixCommit $apisix.Commit -TargetName direct -TargetVersion 'nginx-1.31.3-alpine' -TargetImageID $upstreamImageID -UpstreamImageID $upstreamImageID -GeneratorImageID $generatorImageIDs[[string]$definition.generator] -ScenarioName $scenarioName -ScenarioDefinition $directDefinition -PayloadBytes $payloadBytes -ModeDefinition $modeDefinition -Repetition 1 -DirectRequestsPerSecond $directRequestsPerSecond -HeadroomFactor $headroomFactor -EnvironmentMetadata $environmentMetadata -Measurement $directMeasurement
 
             $targetRequestsPerSecond = @()
             for ($repetition = 1; $repetition -le [int]$modeDefinition.repetitions; $repetition++) {
@@ -726,15 +741,18 @@ try {
                         Wait-ForHttpResponse -Url 'http://127.0.0.1:19090/readyz' -OutputFile (Join-Path $generatedDirectory 'ready.txt') -ExpectedBytes 6
                     }
                     $scheme = if ($definition.tls) { 'https' } else { 'http' }
+                    $hostName = if ($definition.tls) { 'localhost' } else { '127.0.0.1' }
                     $hostPort = if ($definition.tls) { 18443 } else { 18080 }
                     $containerPort = if ($definition.tls) { 8443 } else { 8080 }
                     $responseFile = Join-Path $generatedDirectory 'smoke-response.bin'
-                    Wait-ForHttpResponse -Url "${scheme}://127.0.0.1:${hostPort}/bytes/$payloadBytes" -OutputFile $responseFile -ExpectedBytes $payloadBytes -Insecure:$definition.tls
+                    Wait-ForHttpResponse -Url "${scheme}://${hostName}:${hostPort}/bytes/$payloadBytes" -OutputFile $responseFile -ExpectedBytes $payloadBytes -Insecure:$definition.tls
 
                     $targetUrl = "${scheme}://gateway:${containerPort}/bytes/$payloadBytes"
                     Write-Output "Measurement: target=$targetName scenario=$scenarioName payload_bytes=$payloadBytes repetition=$repetition"
-                    Invoke-GeneratorWarmup -ComposeFile $composeFile -ScenarioDefinition $definition -Url $targetUrl -DurationSeconds ([int]$modeDefinition.warmup_seconds) -ForceHTTP1:$forceHTTP1
-                    $measurement = Invoke-BenchmarkMeasurement -ComposeFile $composeFile -ResultsDirectory $ResultsDir -RelativeDirectory "$targetName/$scenarioName/$payloadBytes/run-$repetition" -ScenarioDefinition $definition -Url $targetUrl -DurationSeconds ([int]$modeDefinition.duration_seconds) -ForceHTTP1:$forceHTTP1
+                    if ($definition.generator -eq 'wrk') {
+                        Invoke-GeneratorWarmup -ComposeFile $composeFile -ScenarioDefinition $definition -Url $targetUrl -DurationSeconds ([int]$modeDefinition.warmup_seconds) -ForceHTTP1:$forceHTTP1
+                    }
+                    $measurement = Invoke-BenchmarkMeasurement -ComposeFile $composeFile -ResultsDirectory $ResultsDir -RelativeDirectory "$targetName/$scenarioName/$payloadBytes/run-$repetition" -ScenarioDefinition $definition -Url $targetUrl -DurationSeconds ([int]$modeDefinition.duration_seconds) -WarmupSeconds ([int]$modeDefinition.warmup_seconds) -ForceHTTP1:$forceHTTP1
                     $targetImageReference = if ($targetName -eq 'go') { 'g-gateway-bench-gateway-go' } else { 'g-gateway-bench-apisix' }
                     $targetImageID = Get-DockerImageID -Reference $targetImageReference
                     $targetVersion = if ($targetName -eq 'go') { $repositoryCommit } else { $apisix.Commit }
