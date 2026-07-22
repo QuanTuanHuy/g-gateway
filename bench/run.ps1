@@ -753,6 +753,15 @@ try {
         }
     }
 
+    if ($Target -eq 'all') {
+        $reportImage = 'g-gateway-bench-report'
+        Invoke-Docker -Arguments @('build', '--file', (Join-Path $env:GATEWAY_SOURCE 'Dockerfile'), '--build-arg', 'COMMAND=bench-report', '--tag', $reportImage, $env:GATEWAY_SOURCE)
+        Invoke-Docker -Arguments @('run', '--rm', '--volume', "${ResultsDir}:/results", $reportImage, '-input', '/results', '-output', '/results/summary')
+    }
+    else {
+        Write-Output "Comparison report skipped because target '$Target' does not include both Go and APISIX."
+    }
+
     Write-Output "Benchmark run completed. Results directory: $ResultsDir"
 }
 catch {

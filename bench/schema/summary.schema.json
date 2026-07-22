@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://g-gateway.local/schemas/summary.schema.json",
+  "title": "G-Gateway deterministic benchmark summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "environment_class", "verdict", "comparisons"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "environment_class": {"enum": ["provisional", "dedicated_linux"]},
+    "verdict": {"enum": ["invalid", "provisional_pass", "provisional_miss"]},
+    "comparisons": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/comparison"}
+    }
+  },
+  "$defs": {
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario", "payload_bytes", "generator", "protocol", "tls", "verdict", "reasons", "direct", "go", "apisix"],
+      "properties": {
+        "scenario": {"type": "string", "minLength": 1},
+        "payload_bytes": {"type": "integer", "minimum": 0},
+        "generator": {"enum": ["wrk", "h2load"]},
+        "protocol": {"enum": ["http/1.1", "http/2"]},
+        "tls": {"type": "boolean"},
+        "verdict": {"enum": ["invalid", "provisional_pass", "provisional_miss"]},
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "direct": {"$ref": "#/$defs/direct"},
+        "go": {"$ref": "#/$defs/target"},
+        "apisix": {"$ref": "#/$defs/target"}
+      }
+    },
+    "direct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests_per_second", "required_headroom_factor", "headroom_ratio"],
+      "properties": {
+        "requests_per_second": {"type": "number", "minimum": 0},
+        "required_headroom_factor": {"type": "number", "exclusiveMinimum": 1},
+        "headroom_ratio": {"type": "number", "minimum": 0}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_count",
+        "median_requests_per_second",
+        "median_transfer_bytes_per_second",
+        "median_p50_us",
+        "median_p95_us",
+        "median_p99_us",
+        "requests",
+        "request_errors",
+        "timeouts",
+        "non_2xx",
+        "error_rate"
+      ],
+      "properties": {
+        "run_count": {"type": "integer", "minimum": 0},
+        "median_requests_per_second": {"type": "number", "minimum": 0},
+        "median_transfer_bytes_per_second": {"type": "number", "minimum": 0},
+        "median_p50_us": {"type": "number", "minimum": 0},
+        "median_p95_us": {"type": "number", "minimum": 0},
+        "median_p99_us": {"type": "number", "minimum": 0},
+        "requests": {"type": "integer", "minimum": 0},
+        "request_errors": {"type": "integer", "minimum": 0},
+        "timeouts": {"type": "integer", "minimum": 0},
+        "non_2xx": {"type": "integer", "minimum": 0},
+        "error_rate": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}
