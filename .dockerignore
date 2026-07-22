@@ -1,0 +1,10 @@
+.git
+.github
+.codex
+.agents
+bench/results
+bench/generated
+bin
+coverage.out
+*.log
+*.md
