@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,7 +11,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 )
@@ -109,6 +112,214 @@ func TestUpgradeNotSupported(t *testing.T) {
 	}
 }
 
+func TestStreamsRequestWithoutWholeBodyBuffer(t *testing.T) {
+	firstChunk := make(chan struct{})
+	transportDone := make(chan struct{})
+	handler := newTestHandler(t, []string{http.MethodPost}, 1024, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		buffer := make([]byte, 5)
+		if _, err := io.ReadFull(request.Body, buffer); err != nil {
+			return nil, err
+		}
+		close(firstChunk)
+		if _, err := io.Copy(io.Discard, request.Body); err != nil {
+			return nil, err
+		}
+		close(transportDone)
+		return response(http.StatusOK, "ok"), nil
+	}))
+	reader, writer := io.Pipe()
+	request := httptest.NewRequest(http.MethodPost, "http://gateway/hello", reader)
+	request.ContentLength = -1
+	recorder := httptest.NewRecorder()
+	handlerDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(recorder, request)
+		close(handlerDone)
+	}()
+
+	if _, err := writer.Write([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstChunk:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive first chunk before request completion")
+	}
+	if _, err := writer.Write([]byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	_ = writer.Close()
+
+	select {
+	case <-transportDone:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not finish reading streamed request")
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("proxy handler did not return")
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestFirstResponseChunkArrivesBeforeCompletion(t *testing.T) {
+	reader, writer := io.Pipe()
+	handler := newTestHandler(t, []string{http.MethodGet}, 1024, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       reader,
+		}, nil
+	}))
+	responseWriter := newObservingResponseWriter()
+	request := httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil)
+	handlerDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(responseWriter, request)
+		close(handlerDone)
+	}()
+
+	if _, err := writer.Write([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-responseWriter.firstWrite:
+	case <-time.After(time.Second):
+		t.Fatal("downstream did not receive first chunk before upstream completion")
+	}
+	if got := responseWriter.bodyString(); got != "first" {
+		t.Fatalf("first downstream body = %q", got)
+	}
+	if _, err := writer.Write([]byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	_ = writer.Close()
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("proxy handler did not finish streamed response")
+	}
+	if got := responseWriter.bodyString(); got != "firstsecond" {
+		t.Fatalf("downstream body = %q", got)
+	}
+}
+
+func TestCancellationReachesUpstream(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	handler := newTestHandler(t, []string{http.MethodGet}, 1024, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		close(started)
+		<-request.Context().Done()
+		close(canceled)
+		return nil, request.Context().Err()
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil).WithContext(ctx)
+	handlerDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(httptest.NewRecorder(), request)
+		close(handlerDone)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("upstream request did not start")
+	}
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not observe cancellation")
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not return after cancellation")
+	}
+}
+
+func TestForwardsTrailers(t *testing.T) {
+	handler := newTestHandler(t, []string{http.MethodGet}, 1024, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("body")),
+			Trailer: http.Header{
+				"X-Checksum": []string{"abc123"},
+			},
+		}, nil
+	}))
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil))
+
+	if got := recorder.Result().Trailer.Get("X-Checksum"); got != "abc123" {
+		t.Fatalf("trailer X-Checksum = %q", got)
+	}
+}
+
+func TestConnectFailureIs502(t *testing.T) {
+	handler := newTestHandler(t, []string{http.MethodGet}, 1024, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial tcp 192.0.2.1: connection refused")
+	}))
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil))
+
+	assertErrorResponse(t, recorder, http.StatusBadGateway, "UPSTREAM_CONNECTION_FAILED", "upstream connection failed")
+}
+
+func TestResponseHeaderTimeoutIs504(t *testing.T) {
+	handler := newTestHandler(t, []string{http.MethodGet}, 1024, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	}))
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil))
+
+	assertErrorResponse(t, recorder, http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "upstream timeout")
+}
+
+func TestUpstreamResetBeforeHeadersIs502(t *testing.T) {
+	handler := newTestHandler(t, []string{http.MethodGet}, 1024, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection reset by peer")
+	}))
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil))
+
+	assertErrorResponse(t, recorder, http.StatusBadGateway, "UPSTREAM_CONNECTION_FAILED", "upstream connection failed")
+}
+
+func TestUpstreamErrorLogsAreRateLimited(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	target, _ := url.Parse("http://upstream:8080")
+	handler, err := New(Options{
+		Route:  model.Route{ID: "baseline", Match: model.RouteMatch{Path: "/hello", Methods: []string{http.MethodGet}}},
+		Target: target,
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("upstream unavailable")
+		}),
+		MaxRequestBodyBytes: 1024,
+		Logger:              logger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 5 {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil))
+	}
+	if got := strings.Count(logs.String(), "upstream request failed"); got != 1 {
+		t.Fatalf("log count = %d, want 1; logs=%q", got, logs.String())
+	}
+}
+
 func newTestHandler(t *testing.T, methods []string, maxBody int64, transport http.RoundTripper) http.Handler {
 	t.Helper()
 	target, err := url.Parse("http://upstream:8080")
@@ -175,4 +386,54 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
+}
+
+type observingResponseWriter struct {
+	mu         sync.Mutex
+	header     http.Header
+	status     int
+	body       bytes.Buffer
+	firstWrite chan struct{}
+	wroteFirst bool
+}
+
+func newObservingResponseWriter() *observingResponseWriter {
+	return &observingResponseWriter{
+		header:     make(http.Header),
+		firstWrite: make(chan struct{}),
+	}
+}
+
+func (w *observingResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *observingResponseWriter) WriteHeader(status int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *observingResponseWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.body.Write(data)
+	if !w.wroteFirst {
+		w.wroteFirst = true
+		close(w.firstWrite)
+	}
+	return n, err
+}
+
+func (w *observingResponseWriter) Flush() {}
+
+func (w *observingResponseWriter) bodyString() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.String()
 }

@@ -1,15 +1,19 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 )
@@ -28,6 +32,8 @@ type handler struct {
 	allow               string
 	maxRequestBodyBytes int64
 	proxy               *httputil.ReverseProxy
+	logger              *slog.Logger
+	logLimiter          errorLogLimiter
 }
 
 func New(options Options) (http.Handler, error) {
@@ -57,12 +63,19 @@ func New(options Options) (http.Handler, error) {
 		methods:             methods,
 		allow:               strings.Join(allowed, ", "),
 		maxRequestBodyBytes: options.MaxRequestBodyBytes,
+		logger:              options.Logger,
 	}
 	h.proxy = &httputil.ReverseProxy{
 		Transport: options.Transport,
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(&target)
 			request.Out.Host = request.In.Host
+			removeHopByHopHeaders(request.Out.Header)
+			rebuildForwardingHeaders(request.Out.Header, request.In)
+		},
+		ModifyResponse: func(response *http.Response) error {
+			removeHopByHopHeaders(response.Header)
+			return nil
 		},
 		ErrorHandler: func(response http.ResponseWriter, request *http.Request, err error) {
 			if request.Context().Err() != nil {
@@ -73,11 +86,33 @@ func New(options Options) (http.Handler, error) {
 				writeError(response, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "request body too large")
 				return
 			}
-			options.Logger.Error("upstream request failed", "error", err)
+			if h.logLimiter.Allow(time.Now()) {
+				h.logger.Error("upstream request failed", "error", err)
+			}
+			var netError net.Error
+			if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netError) && netError.Timeout()) {
+				writeError(response, http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "upstream timeout")
+				return
+			}
 			writeError(response, http.StatusBadGateway, "UPSTREAM_CONNECTION_FAILED", "upstream connection failed")
 		},
 	}
 	return h, nil
+}
+
+type errorLogLimiter struct {
+	mu      sync.Mutex
+	nextLog time.Time
+}
+
+func (l *errorLogLimiter) Allow(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Before(l.nextLog) {
+		return false
+	}
+	l.nextLog = now.Add(time.Second)
+	return true
 }
 
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
