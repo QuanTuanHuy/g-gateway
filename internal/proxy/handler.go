@@ -140,6 +140,9 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	if request.Body != nil {
 		request.Body = http.MaxBytesReader(response, request.Body, h.maxRequestBodyBytes)
 	}
+	// HTTP/1 servers otherwise consume the remaining request body before they
+	// begin writing the response, which prevents bidirectional streaming.
+	_ = http.NewResponseController(response).EnableFullDuplex()
 	h.proxy.ServeHTTP(response, request)
 }
 
