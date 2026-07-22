@@ -1,0 +1,16 @@
+# Go outputs
+*.test
+coverage.out
+*.prof
+/gateway-dp
+/test-upstream
+/bench-report
+
+# Generated benchmark artifacts
+/bench/results/
+/bench/certs/*
+!/bench/certs/generate.ps1
+/bench/generated/*
+!/bench/generated/.gitkeep
+/bench/payloads/*
+!/bench/payloads/.gitkeep

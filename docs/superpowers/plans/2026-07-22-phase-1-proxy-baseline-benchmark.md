@@ -214,7 +214,7 @@ Initialize `.gitignore` to exclude `/bench/results/`, generated certificates, ge
 Run:
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc "gofmt -w internal/model internal/config && go mod tidy && go test ./internal/config -v"
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c "gofmt -w internal/model internal/config && go mod tidy && go test ./internal/config -v"
 ```
 
 Expected: all config tests pass and `go.sum` is created.
@@ -267,7 +267,7 @@ Clone returned URLs so callers cannot mutate runtime state. Configure `DialConte
 - [ ] **Step 4: Verify and commit**
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc "gofmt -w internal/upstream && go test ./internal/upstream -race -v"
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c "gofmt -w internal/upstream && go test ./internal/upstream -race -v"
 git add internal/upstream
 git commit -m "feat: add pooled HTTP1 upstream runtime"
 ```
@@ -325,7 +325,7 @@ Validate request-target shape before matching, exact-match `URL.Path`, check met
 - [ ] **Step 4: Verify and commit**
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc "gofmt -w internal/proxy && go test ./internal/proxy -run 'Test(Route|Method|Invalid|Body|Upgrade)' -v"
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c "gofmt -w internal/proxy && go test ./internal/proxy -run 'Test(Route|Method|Invalid|Body|Upgrade)' -v"
 git add internal/proxy/errors.go internal/proxy/handler.go internal/proxy/handler_test.go
 git commit -m "feat: add exact route and stable proxy errors"
 ```
@@ -378,7 +378,7 @@ Add a private one-message-per-second limiter around structured upstream error lo
 - [ ] **Step 6: Verify and commit**
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc "gofmt -w internal/proxy && go test ./internal/proxy -race -v"
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c "gofmt -w internal/proxy && go test ./internal/proxy -race -v"
 git add internal/proxy
 git commit -m "feat: add streaming reverse proxy semantics"
 ```
@@ -428,7 +428,7 @@ func (t *Telemetry) Wrap(next http.Handler, routeID string) http.Handler
 - [ ] **Step 4: Verify and commit**
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc "gofmt -w internal/telemetry && go mod tidy && go test ./internal/telemetry -race -v"
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c "gofmt -w internal/telemetry && go mod tidy && go test ./internal/telemetry -race -v"
 git add go.mod go.sum internal/telemetry
 git commit -m "feat: add gateway health and telemetry"
 ```
@@ -484,7 +484,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error
 - [ ] **Step 6: Verify and commit**
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc "gofmt -w internal/gateway && go test ./internal/gateway -race -v"
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c "gofmt -w internal/gateway && go test ./internal/gateway -race -v"
 git add internal/gateway
 git commit -m "feat: add gateway listeners and graceful lifecycle"
 ```
@@ -577,7 +577,7 @@ Do not run APISIX comparison in PR CI; it is manual and resource-sensitive.
 - [ ] **Step 5: Verify binaries and image**
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc "gofmt -w cmd internal test && go vet ./... && go test ./... -race -count=1 && go build ./cmd/..."
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c "gofmt -w cmd internal test && go vet ./... && go test ./... -race -count=1 && go build ./cmd/..."
 docker build --build-arg COMMAND=gateway-dp -t g-gateway:phase1 .
 ```
 
@@ -775,7 +775,7 @@ Assert with `go list -deps ./cmd/bench-report` that the report command imports n
 - [ ] **Step 5: Verify and commit**
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc "gofmt -w internal/benchreport cmd/bench-report && go test ./internal/benchreport -race -v && go build ./cmd/bench-report"
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c "gofmt -w internal/benchreport cmd/bench-report && go test ./internal/benchreport -race -v && go build ./cmd/bench-report"
 git add internal/benchreport cmd/bench-report bench/schema/summary.schema.json bench/run.ps1
 git commit -m "bench: add deterministic comparison reports"
 ```
@@ -798,7 +798,7 @@ Document prerequisites, Docker Desktop resource settings, source-guard behavior,
 - [ ] **Step 2: Run repository-wide static and correctness gates**
 
 ```powershell
-docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -lc 'test -z "$(gofmt -l .)" && go vet ./... && go test ./... -count=1 && go test ./... -race -count=1 && go build ./cmd/...'
+docker run --rm -v "${PWD}:/src" -w /src golang:1.26.5-bookworm sh -c 'test -z "$(gofmt -l .)" && go vet ./... && go test ./... -count=1 && go test ./... -race -count=1 && go build ./cmd/...'
 docker build --build-arg COMMAND=gateway-dp -t g-gateway:phase1 .
 docker build --build-arg COMMAND=test-upstream -t g-gateway-test-upstream:phase1 .
 docker build --build-arg COMMAND=bench-report -t g-gateway-bench-report:phase1 .

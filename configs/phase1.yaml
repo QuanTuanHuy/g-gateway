@@ -1,0 +1,40 @@
+api_version: gateway/v1alpha1
+
+listeners:
+  http:
+    address: ":8080"
+  https:
+    address: ":8443"
+    certificate_file: /certs/server.crt
+    private_key_file: /certs/server.key
+  admin:
+    address: ":9090"
+
+server:
+  read_header_timeout: 5s
+  idle_timeout: 60s
+  shutdown_timeout: 30s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 67108864
+
+telemetry:
+  request_metrics_enabled: true
+  profiling_enabled: false
+
+routes:
+  - id: baseline
+    match:
+      path: /hello
+      methods: [GET, POST]
+    upstream_ref: baseline
+
+upstreams:
+  - id: baseline
+    endpoints:
+      - http://upstream:8080
+    transport:
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 1024
+      max_idle_connections_per_host: 1024
