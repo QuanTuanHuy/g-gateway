@@ -1,7 +1,7 @@
 # Phase 1 — Proxy baseline và benchmark harness
 
 - Ngày: 2026-07-22
-- Trạng thái: Thiết kế đã duyệt; chờ review văn bản
+- Trạng thái: Accepted for phase progression; performance evidence provisional
 - Parent roadmap: [Go-native API Gateway phase roadmap](2026-07-21-go-native-api-gateway-phase-roadmap-design.md)
 - North-star: [Go-native API Gateway design](2026-07-21-go-native-api-gateway-design.md)
 
@@ -600,14 +600,14 @@ Parity gate chính thức phải được chạy lại trên dedicated Linux env
 
 ### 19.1. Implementation audit — 2026-07-22
 
-Trạng thái ở đầu tài liệu chưa được nâng lên `Implemented; provisional benchmark captured` vì blocking acceptance chưa hoàn tất.
+Ngày 2026-07-23, Phase 1 được chấp nhận để tiếp tục roadmap dựa trên correctness, reproducibility và clean smoke evidence. Quyết định này không thay đổi `provisional_miss` thành parity pass và không phải production performance certification.
 
 - Unit, integration, race, vet, format, command build và ba container build đã pass với Go 1.26.5.
 - Clean smoke-all đã tạo đủ 42 raw runs, 18 h2load request logs và 14 summary comparisons; mọi run có zero request errors/timeouts/non-2xx và direct-control headroom lớn hơn 125%.
 - Source guard đã xác minh APISIX checkout sạch tại đúng commit `0f35b154824ed51d0d4bdadc78d1d5fa9ed1ec62`; standalone topology không dùng etcd/Admin API.
 - Smoke summary có `environment_class: provisional` và `verdict: provisional_miss`; parity miss này không phải blocking failure.
-- Blocking gate còn thiếu chính xác: canonical compare-all với năm lần lặp 60 giây chưa được thực thi vì phiên làm việc chưa được cấp quyền cho lệnh chạy dài.
-- Profiling CPU/heap và Docker resource traces vẫn pending; chỉ thu thập sau khi canonical compare tạo `provisional_miss`, theo runbook, và không thay thế comparison samples.
+- Canonical compare-all với năm lần lặp 60 giây chưa được thực thi vì phiên làm việc chưa được cấp quyền cho lệnh chạy dài; đây là performance debt không còn chặn Phase 2.
+- Profiling CPU/heap và Docker resource traces vẫn pending; chúng phải được hoàn tất trước production certification và không thay thế comparison samples.
 
 ## 20. Deliverables
 
@@ -626,7 +626,7 @@ Trạng thái ở đầu tài liệu chưa được nâng lên `Implemented; pro
 
 ## 21. Handoff sang Phase 2
 
-Phase 2 chỉ bắt đầu sau Phase 1 acceptance.
+Phase 1 đã được chấp nhận cho phase progression ngày 2026-07-23 với performance evidence vẫn provisional.
 
 Các contract được giữ:
 

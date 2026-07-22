@@ -147,7 +147,7 @@ Chứng minh request hot path chỉ đọc immutable state và route matching sc
 - Request không thấy partial revision trong concurrent update test.
 - Không có global mutex, JSON parsing, reference resolution hoặc plugin sorting trên hot path.
 - Go race detector đạt cho snapshot/router/plugin core.
-- Route-first/middle/last benchmarks đạt comparative target với APISIX.
+- Route-first/middle/last đạt relative scalability target so với Go one-route baseline; APISIX dùng làm comparative evidence theo Phase 2 design spec.
 - Memory sau nhiều snapshot swap trở về steady state.
 
 ## 7. Phase 3 — Upstream resilience
