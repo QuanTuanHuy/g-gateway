@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://g-gateway.local/schemas/raw-run.schema.json",
+  "title": "G-Gateway benchmark raw run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "timestamp_utc",
+    "environment_class",
+    "gateway_git_commit",
+    "target",
+    "image_ids",
+    "scenario",
+    "payload_bytes",
+    "generator_settings",
+    "target_limits",
+    "environment",
+    "direct_control",
+    "artifacts",
+    "metrics",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "environment_class": {
+      "enum": ["provisional", "dedicated_linux"]
+    },
+    "gateway_git_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "apisix_commit"],
+      "properties": {
+        "name": {
+          "enum": ["direct", "go", "apisix"]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "apisix_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "image_ids": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "upstream", "generator"],
+      "properties": {
+        "target": {"type": "string"},
+        "upstream": {"type": "string", "minLength": 1},
+        "generator": {"type": "string", "minLength": 1}
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "generator", "protocol", "tls"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "generator": {"enum": ["wrk", "h2load"]},
+        "protocol": {"enum": ["http/1.1", "http/2"]},
+        "tls": {"type": "boolean"}
+      }
+    },
+    "payload_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "generator_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator_version", "generator_revision", "threads", "connections", "clients", "streams_per_client", "warmup_seconds", "duration_seconds", "repetition"],
+      "properties": {
+        "generator_version": {"type": "string", "minLength": 1},
+        "generator_revision": {"type": "string", "minLength": 1},
+        "threads": {"type": "integer", "minimum": 1},
+        "connections": {"type": "integer", "minimum": 0},
+        "clients": {"type": "integer", "minimum": 0},
+        "streams_per_client": {"type": "integer", "minimum": 0},
+        "warmup_seconds": {"type": "integer", "minimum": 0},
+        "duration_seconds": {"type": "integer", "minimum": 1},
+        "repetition": {"type": "integer", "minimum": 1}
+      }
+    },
+    "target_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpus", "memory_bytes", "workers"],
+      "properties": {
+        "cpus": {"type": "number", "exclusiveMinimum": 0},
+        "memory_bytes": {"type": "integer", "minimum": 1},
+        "workers": {"type": "integer", "minimum": 1}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["docker_version", "operating_system", "cpu"],
+      "properties": {
+        "docker_version": {"type": "string", "minLength": 1},
+        "operating_system": {"type": "string", "minLength": 1},
+        "cpu": {"type": "string", "minLength": 1}
+      }
+    },
+    "direct_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests_per_second", "required_headroom_factor"],
+      "properties": {
+        "requests_per_second": {"type": "number", "minimum": 0},
+        "required_headroom_factor": {"type": "number", "exclusiveMinimum": 1}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stdout", "stderr", "structured", "request_log"],
+      "properties": {
+        "stdout": {"type": "string", "minLength": 1},
+        "stderr": {"type": "string", "minLength": 1},
+        "structured": {"type": "string", "minLength": 1},
+        "request_log": {"type": "string"}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests_per_second", "transfer_bytes_per_second", "p50_us", "p95_us", "p99_us"],
+      "properties": {
+        "requests_per_second": {"type": "number", "minimum": 0},
+        "transfer_bytes_per_second": {"type": "number", "minimum": 0},
+        "p50_us": {"type": "number", "minimum": 0},
+        "p95_us": {"type": "number", "minimum": 0},
+        "p99_us": {"type": "number", "minimum": 0}
+      }
+    },
+    "errors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_errors", "timeouts", "non_2xx"],
+      "properties": {
+        "request_errors": {"type": "integer", "minimum": 0},
+        "timeouts": {"type": "integer", "minimum": 0},
+        "non_2xx": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

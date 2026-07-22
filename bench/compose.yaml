@@ -61,22 +61,29 @@ services:
     networks: [benchmark]
 
   upstream-performance:
-    image: nginx:1.31.3-alpine
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./payloads:/payloads:ro
+    image: g-gateway-bench-upstream-performance
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
     networks: [benchmark]
 
   wrk:
     profiles: [load]
-    image: alpine:3.21.3
-    command: ["true"]
+    build:
+      context: ./wrk
+      dockerfile: Dockerfile
+    volumes:
+      - ./wrk/report.lua:/scripts/report.lua:ro
+      - ${BENCH_RESULTS_DIR}:/results
     networks: [benchmark]
 
   h2load:
     profiles: [load]
-    image: alpine:3.21.3
-    command: ["true"]
+    build:
+      context: ./h2load
+      dockerfile: Dockerfile
+    volumes:
+      - ${BENCH_RESULTS_DIR}:/results
     networks: [benchmark]
 
 networks:
