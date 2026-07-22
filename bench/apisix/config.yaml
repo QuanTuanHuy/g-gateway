@@ -1,0 +1,28 @@
+apisix:
+  node_listen:
+    - 8080
+  enable_admin: false
+  enable_control: false
+  enable_http2: true
+  enable_server_tokens: false
+  ssl:
+    enable: true
+    listen:
+      - port: 8443
+    ssl_protocols: TLSv1.2 TLSv1.3
+
+nginx_config:
+  error_log_level: warn
+  worker_processes: 2
+  enable_cpu_affinity: false
+  http:
+    enable_access_log: false
+    upstream:
+      keepalive: 1024
+      keepalive_requests: 100000
+      keepalive_timeout: 60s
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml

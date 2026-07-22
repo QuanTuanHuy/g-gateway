@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "direct_upstream_headroom_factor": 1.25,
+  "modes": {
+    "smoke": {
+      "warmup_seconds": 3,
+      "duration_seconds": 10,
+      "repetitions": 1
+    },
+    "compare": {
+      "warmup_seconds": 15,
+      "duration_seconds": 60,
+      "repetitions": 5
+    }
+  },
+  "scenarios": {
+    "h1-clear": {
+      "generator": "wrk",
+      "protocol": "http/1.1",
+      "tls": false,
+      "payload_bytes": [0, 1024, 16384, 65536],
+      "settings": {
+        "threads": 2,
+        "connections": 16
+      }
+    },
+    "h1-tls": {
+      "generator": "wrk",
+      "protocol": "http/1.1",
+      "tls": true,
+      "payload_bytes": [0, 1024, 16384, 65536],
+      "settings": {
+        "threads": 2,
+        "connections": 16
+      }
+    },
+    "h1-crosscheck-clear": {
+      "generator": "h2load",
+      "protocol": "http/1.1",
+      "tls": false,
+      "payload_bytes": [1024],
+      "settings": {
+        "threads": 2,
+        "clients": 16,
+        "streams_per_client": 1
+      }
+    },
+    "h1-crosscheck-tls": {
+      "generator": "h2load",
+      "protocol": "http/1.1",
+      "tls": true,
+      "payload_bytes": [1024],
+      "settings": {
+        "threads": 2,
+        "clients": 16,
+        "streams_per_client": 1
+      }
+    },
+    "h2-tls": {
+      "generator": "h2load",
+      "protocol": "http/2",
+      "tls": true,
+      "payload_bytes": [0, 1024, 16384, 65536],
+      "settings": {
+        "threads": 2,
+        "clients": 16,
+        "streams_per_client": 16
+      }
+    }
+  }
+}
