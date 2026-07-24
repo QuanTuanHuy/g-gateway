@@ -28,7 +28,10 @@ type Registry struct {
 }
 
 func NewBuiltinRegistry() (*Registry, error) {
-	return NewRegistry(requestIDDefinition(rand.Reader))
+	return NewRegistry(
+		requestIDDefinition(rand.Reader),
+		headerRewriteDefinition(),
+	)
 }
 
 func NewRegistry(definitions ...Definition) (*Registry, error) {
