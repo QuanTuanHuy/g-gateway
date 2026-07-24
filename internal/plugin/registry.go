@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -24,6 +25,10 @@ type Definition struct {
 
 type Registry struct {
 	definitions map[string]Definition
+}
+
+func NewBuiltinRegistry() (*Registry, error) {
+	return NewRegistry(requestIDDefinition(rand.Reader))
 }
 
 func NewRegistry(definitions ...Definition) (*Registry, error) {

@@ -34,7 +34,6 @@ routes:
         enabled: true
         config:
           header_name: X-Request-ID
-          include_in_response: true
   - id: users
     priority: 50
     match:
