@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,154 @@ import (
 	"testing"
 	"time"
 )
+
+func TestDecodeValidV1Alpha2(t *testing.T) {
+	certFile, keyFile := writeTLSFiles(t)
+
+	bootstrap, resources, err := Decode(strings.NewReader(validV2Document(certFile, keyFile)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if bootstrap.HTTP.Address != ":8080" {
+		t.Fatalf("HTTP address = %q", bootstrap.HTTP.Address)
+	}
+	if len(resources.Routes) != 2 || len(resources.Services) != 1 || len(resources.Upstreams) != 1 {
+		t.Fatalf("resource counts = routes:%d services:%d upstreams:%d", len(resources.Routes), len(resources.Services), len(resources.Upstreams))
+	}
+	route := resources.Routes[0]
+	if route.ID != "users" || route.Priority != 100 || route.ServiceRef != "users-service" || route.UpstreamRef != "" {
+		t.Fatalf("route = %+v", route)
+	}
+	if len(route.Match.Hosts) != 2 || route.Match.Hosts[1] != "*.example.net" {
+		t.Fatalf("hosts = %v", route.Match.Hosts)
+	}
+	if len(route.Match.Headers) != 1 || route.Match.Headers[0].Operator != "one_of" {
+		t.Fatalf("header predicates = %+v", route.Match.Headers)
+	}
+	if len(route.Plugins) != 1 || !route.Plugins[0].Enabled {
+		t.Fatalf("route plugins = %+v", route.Plugins)
+	}
+	var pluginConfig map[string]any
+	if err := json.Unmarshal(route.Plugins[0].RawConfig, &pluginConfig); err != nil {
+		t.Fatalf("plugin config is not JSON: %v", err)
+	}
+	if pluginConfig["header_name"] != "X-Request-ID" {
+		t.Fatalf("plugin config = %#v", pluginConfig)
+	}
+	service := resources.Services[0]
+	if service.ID != "users-service" || service.UpstreamRef != "baseline" || len(service.Plugins) != 1 {
+		t.Fatalf("service = %+v", service)
+	}
+	if resources.Routes[1].UpstreamRef != "baseline" {
+		t.Fatalf("direct route = %+v", resources.Routes[1])
+	}
+}
+
+func TestDecodeV1Alpha2RejectsInvalidResources(t *testing.T) {
+	certFile, keyFile := writeTLSFiles(t)
+	valid := validV2Document(certFile, keyFile)
+
+	tests := []struct {
+		name    string
+		old     string
+		new     string
+		wantErr string
+	}{
+		{
+			name:    "unknown route field",
+			old:     "    priority: 100",
+			new:     "    priority: 100\n    unknown: true",
+			wantErr: "unknown",
+		},
+		{
+			name:    "duplicate route ID",
+			old:     "  - id: health",
+			new:     "  - id: users",
+			wantErr: "duplicate route id",
+		},
+		{
+			name:    "duplicate service ID",
+			old:     "services:\n  - id: users-service",
+			new:     "services:\n  - id: users-service\n    upstream_ref: baseline\n  - id: users-service",
+			wantErr: "duplicate service id",
+		},
+		{
+			name:    "duplicate upstream ID",
+			old:     "upstreams:\n  - id: baseline",
+			new:     "upstreams:\n  - id: baseline\n    endpoints: [http://upstream:8080]\n    transport:\n      dial_timeout: 3s\n      response_header_timeout: 10s\n      idle_connection_timeout: 90s\n      max_idle_connections: 1024\n      max_idle_connections_per_host: 1024\n  - id: baseline",
+			wantErr: "duplicate upstream id",
+		},
+		{
+			name:    "both route targets",
+			old:     "    service_ref: users-service",
+			new:     "    service_ref: users-service\n    upstream_ref: baseline",
+			wantErr: "exactly one",
+		},
+		{
+			name:    "missing route target",
+			old:     "    upstream_ref: baseline",
+			new:     "",
+			wantErr: "exactly one",
+		},
+		{
+			name:    "unresolved service",
+			old:     "    service_ref: users-service",
+			new:     "    service_ref: absent",
+			wantErr: "service_ref",
+		},
+		{
+			name:    "unresolved direct upstream",
+			old:     "    upstream_ref: baseline",
+			new:     "    upstream_ref: absent",
+			wantErr: "upstream_ref",
+		},
+		{
+			name:    "unresolved service upstream",
+			old:     "    upstream_ref: baseline\n    plugins:",
+			new:     "    upstream_ref: absent\n    plugins:",
+			wantErr: "services[0].upstream_ref",
+		},
+		{
+			name:    "invalid predicate operator",
+			old:     "          operator: one_of",
+			new:     "          operator: regex",
+			wantErr: "operator",
+		},
+		{
+			name:    "exists with values",
+			old:     "          operator: one_of\n          values: [acme, globex]",
+			new:     "          operator: exists\n          values: [acme]",
+			wantErr: "values",
+		},
+		{
+			name:    "equals without one value",
+			old:     "          operator: equals\n          values: [\"true\"]",
+			new:     "          operator: equals\n          values: []",
+			wantErr: "values",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			document := replaceOnce(t, valid, tt.old, tt.new)
+			_, _, err := Decode(strings.NewReader(document))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Decode() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDecodeV1Alpha1RejectsV1Alpha2Services(t *testing.T) {
+	certFile, keyFile := writeTLSFiles(t)
+	document := validDocument(certFile, keyFile) + "\nservices: []\n"
+
+	_, _, err := Decode(strings.NewReader(document))
+	if err == nil || !strings.Contains(err.Error(), "services") {
+		t.Fatalf("Decode() error = %v, want strict unknown-field error", err)
+	}
+}
 
 func TestDecodeValidPhase1Config(t *testing.T) {
 	certFile, keyFile := writeTLSFiles(t)
@@ -207,3 +356,76 @@ const validUpstreamBlock = `upstreams:
       idle_connection_timeout: 90s
       max_idle_connections: 1024
       max_idle_connections_per_host: 1024`
+
+func validV2Document(certFile, keyFile string) string {
+	return fmt.Sprintf(`api_version: gateway/v1alpha2
+
+listeners:
+  http:
+    address: ":8080"
+  https:
+    address: ":8443"
+    certificate_file: %s
+    private_key_file: %s
+  admin:
+    address: ":9090"
+
+server:
+  read_header_timeout: 5s
+  idle_timeout: 60s
+  shutdown_timeout: 30s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 67108864
+
+telemetry:
+  request_metrics_enabled: true
+  profiling_enabled: false
+
+routes:
+  - id: users
+    priority: 100
+    match:
+      hosts: [api.example.com, "*.example.net"]
+      path: /users/{id}
+      methods: [GET]
+      headers:
+        - name: X-Tenant
+          operator: one_of
+          values: [acme, globex]
+      queries:
+        - name: verbose
+          operator: equals
+          values: ["true"]
+    service_ref: users-service
+    plugins:
+      - name: request-id
+        config:
+          header_name: X-Request-ID
+  - id: health
+    match:
+      path: /health
+      methods: [GET]
+    upstream_ref: baseline
+
+services:
+  - id: users-service
+    upstream_ref: baseline
+    plugins:
+      - name: header-rewrite
+        enabled: true
+        config:
+          request:
+            set:
+              X-Service: users
+
+upstreams:
+  - id: baseline
+    endpoints: [http://upstream:8080]
+    transport:
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 1024
+      max_idle_connections_per_host: 1024
+`, certFile, keyFile)
+}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -21,30 +22,67 @@ func Load(path string) (BootstrapConfig, model.ResourceSet, error) {
 }
 
 func Decode(r io.Reader) (BootstrapConfig, model.ResourceSet, error) {
-	decoder := yaml.NewDecoder(r)
-	decoder.KnownFields(true)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return BootstrapConfig{}, model.ResourceSet{}, fmt.Errorf("read config: %w", err)
+	}
 
-	var wire document
-	if err := decoder.Decode(&wire); err != nil {
-		return BootstrapConfig{}, model.ResourceSet{}, fmt.Errorf("decode config: %w", err)
+	var header versionHeader
+	if err := yaml.Unmarshal(data, &header); err != nil {
+		return BootstrapConfig{}, model.ResourceSet{}, fmt.Errorf("decode config header: %w", err)
+	}
+
+	switch header.APIVersion {
+	case apiVersionV1Alpha1:
+		var wire document
+		if err := decodeStrict(data, &wire); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		bootstrap, resources, err := convert(wire)
+		if err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		if err := validateV1(wire.APIVersion, &bootstrap, &resources); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		return bootstrap, resources, nil
+	case apiVersionV1Alpha2:
+		var wire documentV2
+		if err := decodeStrict(data, &wire); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		bootstrap, resources, err := convertV2(wire)
+		if err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		if err := validateV2(wire.APIVersion, &bootstrap, &resources); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		return bootstrap, resources, nil
+	default:
+		return BootstrapConfig{}, model.ResourceSet{}, fmt.Errorf("api_version: unsupported %q", header.APIVersion)
+	}
+}
+
+type versionHeader struct {
+	APIVersion string `yaml:"api_version"`
+}
+
+func decodeStrict(data []byte, dst any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(dst); err != nil {
+		return fmt.Errorf("decode config: %w", err)
 	}
 
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err != nil {
-			return BootstrapConfig{}, model.ResourceSet{}, fmt.Errorf("decode trailing config: %w", err)
+			return fmt.Errorf("decode trailing config: %w", err)
 		}
-		return BootstrapConfig{}, model.ResourceSet{}, fmt.Errorf("decode config: multiple YAML documents are not allowed")
+		return fmt.Errorf("decode config: multiple YAML documents are not allowed")
 	}
-
-	bootstrap, resources, err := convert(wire)
-	if err != nil {
-		return BootstrapConfig{}, model.ResourceSet{}, err
-	}
-	if err := validate(wire.APIVersion, &bootstrap, &resources); err != nil {
-		return BootstrapConfig{}, model.ResourceSet{}, err
-	}
-	return bootstrap, resources, nil
+	return nil
 }
 
 func convert(wire document) (BootstrapConfig, model.ResourceSet, error) {
