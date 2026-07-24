@@ -211,7 +211,9 @@ func NormalizeRequestHost(authority string) (string, error) {
 	}
 
 	host := authority
-	if strings.HasPrefix(authority, "[") || strings.ContainsRune(authority, ':') {
+	if net.ParseIP(authority) != nil {
+		host = authority
+	} else if strings.HasPrefix(authority, "[") || strings.ContainsRune(authority, ':') {
 		parsedHost, port, err := net.SplitHostPort(authority)
 		if err != nil {
 			return "", fmt.Errorf("malformed host authority %q: %w", authority, err)
