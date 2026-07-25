@@ -28,6 +28,7 @@ func NewManager(builder *Builder, observer Observer) *Manager {
 func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 	started := time.Now()
 	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	if active := m.active.Load(); active != nil && revision <= active.Revision() {
 		buildErr := &BuildError{
 			Code:     "STALE_REVISION",
@@ -36,7 +37,6 @@ func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 			Field:    "revision",
 			Cause:    fmt.Errorf("active revision is %d", active.Revision()),
 		}
-		m.applyMu.Unlock()
 		m.notifyRejected(buildErr, time.Since(started))
 		return buildErr
 	}
@@ -47,7 +47,6 @@ func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 			Revision: revision,
 			Cause:    fmt.Errorf("runtime builder is nil"),
 		}
-		m.applyMu.Unlock()
 		m.notifyRejected(buildErr, time.Since(started))
 		return buildErr
 	}
@@ -64,7 +63,6 @@ func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 				Cause:    err,
 			}
 		}
-		m.applyMu.Unlock()
 		m.notifyRejected(buildErr, duration)
 		return buildErr
 	}
@@ -75,14 +73,12 @@ func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 			Revision: revision,
 			Cause:    fmt.Errorf("builder returned an invalid snapshot"),
 		}
-		m.applyMu.Unlock()
 		m.notifyRejected(buildErr, duration)
 		return buildErr
 	}
 	snapshot.stats.BuildDuration = duration
 	m.active.Store(snapshot)
 	stats := snapshot.stats
-	m.applyMu.Unlock()
 	m.notifyApplied(stats)
 	return nil
 }

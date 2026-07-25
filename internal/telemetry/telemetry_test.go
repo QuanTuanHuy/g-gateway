@@ -1,11 +1,16 @@
 package telemetry
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
+	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 )
 
 func TestHealthAndReadinessTransitions(t *testing.T) {
@@ -45,7 +50,7 @@ func TestRequestMetricsDisabledReturnsOriginalHandler(t *testing.T) {
 	}
 	next := &statusHandler{status: http.StatusNoContent}
 
-	wrapped := telemetry.Wrap(next, "baseline")
+	wrapped := telemetry.Wrap(next)
 	if wrapped != next {
 		t.Fatal("Wrap returned middleware while request metrics are disabled")
 	}
@@ -55,21 +60,28 @@ func TestRequestMetricsDisabledReturnsOriginalHandler(t *testing.T) {
 	}
 }
 
-func TestRequestMetricsUseBoundedLabels(t *testing.T) {
+func TestRequestMetricsUseMatchedRouteID(t *testing.T) {
 	telemetry, err := New(true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := &statusHandler{status: http.StatusCreated}
-	wrapped := telemetry.Wrap(next, "baseline")
+	next := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		state, ok := requestctx.From(request.Context())
+		if !ok {
+			t.Fatal("request context is missing")
+		}
+		state.Route = &requestctx.RouteMeta{ID: "dynamic-route"}
+		response.WriteHeader(http.StatusCreated)
+	})
+	wrapped := requestctx.Middleware(telemetry.Wrap(next))
 	request := httptest.NewRequest(http.MethodPost, "http://tenant.example/private/customer/123", nil)
 
 	wrapped.ServeHTTP(httptest.NewRecorder(), request)
 
 	body := scrapeMetrics(t, telemetry.AdminHandler())
 	for _, fragment := range []string{
-		`gateway_http_requests_total{method="POST",route_id="baseline",status_class="2xx"} 1`,
-		`gateway_http_request_duration_seconds_count{method="POST",route_id="baseline",status_class="2xx"} 1`,
+		`gateway_http_requests_total{method="POST",route_id="dynamic-route",status_class="2xx"} 1`,
+		`gateway_http_request_duration_seconds_count{method="POST",route_id="dynamic-route",status_class="2xx"} 1`,
 	} {
 		if !strings.Contains(body, fragment) {
 			t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
@@ -79,6 +91,96 @@ func TestRequestMetricsUseBoundedLabels(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("metrics contain forbidden high-cardinality value %q", forbidden)
 		}
+	}
+}
+
+func TestRequestMetricsUseUnmatchedRouteIDFor404(t *testing.T) {
+	telemetry, err := New(true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := requestctx.Middleware(telemetry.Wrap(&statusHandler{status: http.StatusNotFound}))
+
+	wrapped.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://gateway/not-found", nil),
+	)
+
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	if fragment := `gateway_http_requests_total{method="GET",route_id="__unmatched__",status_class="4xx"} 1`; !strings.Contains(body, fragment) {
+		t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
+	}
+	if strings.Contains(body, `route_id=""`) {
+		t.Fatalf("metrics contain an empty route label:\n%s", body)
+	}
+}
+
+func TestSnapshotObserverExportsBoundedRuntimeMetrics(t *testing.T) {
+	telemetry, err := New(false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	telemetry.SnapshotApplied(gatewayruntime.Stats{
+		Revision:      7,
+		RouteCount:    11,
+		ServiceCount:  3,
+		UpstreamCount: 2,
+		PluginCount:   5,
+		BuildDuration: 25 * time.Millisecond,
+	})
+	telemetry.SnapshotRejected(&gatewayruntime.BuildError{
+		Code:         "ROUTE_PLUGIN_INVALID",
+		Stage:        gatewayruntime.StagePlugin,
+		ResourceKind: "route",
+		ResourceID:   "secret-customer-id",
+		Cause:        errors.New("raw validation details"),
+	}, 10*time.Millisecond)
+
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	for _, fragment := range []string{
+		`gateway_runtime_active_revision 7`,
+		`gateway_runtime_compiled_routes 11`,
+		`gateway_runtime_compiled_services 3`,
+		`gateway_runtime_compiled_plugins 5`,
+		`gateway_runtime_snapshot_apply_total{code="",result="applied",stage=""} 1`,
+		`gateway_runtime_snapshot_apply_total{code="ROUTE_PLUGIN_INVALID",result="rejected",stage="plugin_compile"} 1`,
+		`gateway_runtime_snapshot_apply_duration_seconds_count 2`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
+		}
+	}
+	for _, forbidden := range []string{"secret-customer-id", "raw validation details"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("metrics contain forbidden high-cardinality value %q:\n%s", forbidden, body)
+		}
+	}
+}
+
+func TestSnapshotApplyDoesNotPrecreateRouteRequestSeries(t *testing.T) {
+	telemetry, err := New(true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	telemetry.SnapshotApplied(gatewayruntime.Stats{
+		Revision:   1,
+		RouteCount: 100_000,
+	})
+
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	if strings.Contains(body, `gateway_http_requests_total{`) {
+		t.Fatalf("snapshot apply pre-created request label series:\n%s", body)
+	}
+
+	wrapped := requestctx.Middleware(telemetry.Wrap(&statusHandler{status: http.StatusNotFound}))
+	wrapped.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://gateway/not-found", nil),
+	)
+	body = scrapeMetrics(t, telemetry.AdminHandler())
+	if got := strings.Count(body, `gateway_http_requests_total{`); got != 1 {
+		t.Fatalf("request counter series = %d, want exactly one observed series:\n%s", got, body)
 	}
 }
 

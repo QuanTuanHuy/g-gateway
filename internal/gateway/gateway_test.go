@@ -78,6 +78,145 @@ func TestNewRejectsMismatchedKeyPairBeforeBind(t *testing.T) {
 	}
 }
 
+func TestNewActivatesInitialSnapshotBeforeStart(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstreamServer.Close)
+	certFile, keyFile := writeCertificatePair(t)
+
+	gateway, err := New(testBootstrap(certFile, keyFile), testResources(upstreamServer.URL), testLogger())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = gateway.Shutdown(ctx)
+	})
+
+	snapshot := gateway.manager.Load()
+	if snapshot == nil || snapshot.Revision() != 1 {
+		t.Fatalf("active snapshot = %#v, want revision 1 before Start", snapshot)
+	}
+}
+
+func TestNewRejectsInvalidInitialSnapshotBeforeStart(t *testing.T) {
+	certFile, keyFile := writeCertificatePair(t)
+	resources := testResources("http://127.0.0.1:8080")
+	resources.Routes[0].UpstreamRef = "missing"
+
+	gateway, err := New(testBootstrap(certFile, keyFile), resources, testLogger())
+	if err == nil {
+		if gateway != nil {
+			_ = gateway.Shutdown(context.Background())
+		}
+		t.Fatal("New() error = nil, want invalid initial snapshot error")
+	}
+	if !strings.Contains(err.Error(), "activate initial runtime snapshot") {
+		t.Fatalf("New() error = %v, want initial snapshot activation error", err)
+	}
+}
+
+func TestApplyPublishesNewRouteAndKeepsLastGoodSnapshot(t *testing.T) {
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, "A")
+	}))
+	t.Cleanup(upstreamA.Close)
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, "B")
+	}))
+	t.Cleanup(upstreamB.Close)
+	certFile, keyFile := writeCertificatePair(t)
+	revision1 := runtimeResources(upstreamA.URL, upstreamB.URL, "upstream-a", "1")
+	gateway, err := New(testBootstrap(certFile, keyFile), revision1, testLogger())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	addresses, err := gateway.Start()
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := gateway.Shutdown(ctx); err != nil {
+			t.Fatalf("Shutdown() error = %v", err)
+		}
+	}()
+
+	target := "http://" + loopbackAddress(t, addresses.HTTP) + "/hello"
+	assertGatewayRevision(t, target, "A", "1")
+
+	revision2 := runtimeResources(upstreamA.URL, upstreamB.URL, "upstream-b", "2")
+	if err := gateway.Apply(2, revision2); err != nil {
+		t.Fatalf("Apply(2) error = %v", err)
+	}
+	assertGatewayRevision(t, target, "B", "2")
+
+	if err := gateway.Apply(2, revision1); err == nil || !strings.Contains(err.Error(), "STALE_REVISION") {
+		t.Fatalf("stale Apply error = %v, want STALE_REVISION", err)
+	}
+	invalid := runtimeResources(upstreamA.URL, upstreamB.URL, "missing", "3")
+	if err := gateway.Apply(3, invalid); err == nil {
+		t.Fatal("invalid Apply error = nil")
+	}
+	assertGatewayRevision(t, target, "B", "2")
+	assertHTTPStatus(t, "http://"+loopbackAddress(t, addresses.Admin)+"/readyz", http.StatusOK, nil)
+}
+
+func TestApplyRejectsUpdatesAfterShutdownBegins(t *testing.T) {
+	fixture := newGatewayFixture(t, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	if _, err := fixture.gateway.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := fixture.gateway.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	err := fixture.gateway.Apply(2, testResources(fixture.upstream.URL))
+	if err == nil || !strings.Contains(err.Error(), "GATEWAY_SHUTTING_DOWN") {
+		t.Fatalf("Apply() error = %v, want GATEWAY_SHUTTING_DOWN", err)
+	}
+}
+
+func TestShutdownClosesIdleConnectionsForEveryFixedUpstream(t *testing.T) {
+	upstreamA, idleA, closedA := newTrackedUpstream(t, "A")
+	upstreamB, idleB, closedB := newTrackedUpstream(t, "B")
+	certFile, keyFile := writeCertificatePair(t)
+	resources := runtimeResources(upstreamA.URL, upstreamB.URL, "upstream-a", "1")
+	gateway, err := New(testBootstrap(certFile, keyFile), resources, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses, err := gateway.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := "http://" + loopbackAddress(t, addresses.HTTP) + "/hello"
+	assertGatewayRevision(t, target, "A", "1")
+	waitSignal(t, idleA, "upstream A idle connection")
+
+	revision2 := runtimeResources(upstreamA.URL, upstreamB.URL, "upstream-b", "2")
+	if err := gateway.Apply(2, revision2); err != nil {
+		t.Fatal(err)
+	}
+	assertGatewayRevision(t, target, "B", "2")
+	waitSignal(t, idleB, "upstream B idle connection")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := gateway.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitSignal(t, closedA, "upstream A connection close")
+	waitSignal(t, closedB, "upstream B connection close")
+}
+
 func TestServesHTTP1Cleartext(t *testing.T) {
 	fixture := newGatewayFixture(t, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		_, _ = io.WriteString(w, request.Proto)
@@ -318,6 +457,76 @@ func testResources(endpoint string) model.ResourceSet {
 			},
 		}},
 	}
+}
+
+func runtimeResources(endpointA, endpointB, target, marker string) model.ResourceSet {
+	resources := testResources(endpointA)
+	resources.Upstreams[0].ID = "upstream-a"
+	resources.Upstreams = append(resources.Upstreams, model.Upstream{
+		ID:        "upstream-b",
+		Endpoints: []string{endpointB},
+		Transport: resources.Upstreams[0].Transport,
+	})
+	resources.Routes[0].UpstreamRef = target
+	resources.Routes[0].Plugins = []model.PluginAttachment{{
+		Name:      "header-rewrite",
+		Enabled:   true,
+		RawConfig: json.RawMessage(`{"response":{"set":{"X-Revision":"` + marker + `"}}}`),
+	}}
+	return resources
+}
+
+func assertGatewayRevision(t *testing.T, target, wantBody, wantRevision string) {
+	t.Helper()
+	response, err := http.Get(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || string(body) != wantBody || response.Header.Get("X-Revision") != wantRevision {
+		t.Fatalf(
+			"GET %s = status %d, body %q, X-Revision %q; want 200, %q, %q",
+			target,
+			response.StatusCode,
+			body,
+			response.Header.Get("X-Revision"),
+			wantBody,
+			wantRevision,
+		)
+	}
+}
+
+func newTrackedUpstream(
+	t *testing.T,
+	body string,
+) (server *httptest.Server, idle <-chan struct{}, closed <-chan struct{}) {
+	t.Helper()
+	idleSignal := make(chan struct{}, 1)
+	closedSignal := make(chan struct{}, 1)
+	server = httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, body)
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateIdle:
+			select {
+			case idleSignal <- struct{}{}:
+			default:
+			}
+		case http.StateClosed:
+			select {
+			case closedSignal <- struct{}{}:
+			default:
+			}
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+	return server, idleSignal, closedSignal
 }
 
 func writeCertificatePair(t *testing.T) (string, string) {

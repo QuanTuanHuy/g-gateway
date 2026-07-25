@@ -11,6 +11,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
+	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 )
 
 type Telemetry struct {
@@ -19,6 +22,12 @@ type Telemetry struct {
 	requests              *prometheus.CounterVec
 	duration              *prometheus.HistogramVec
 	requestMetricsEnabled bool
+	activeRevision        prometheus.Gauge
+	snapshotApplyDuration prometheus.Histogram
+	snapshotApplyTotal    *prometheus.CounterVec
+	compiledRoutes        prometheus.Gauge
+	compiledServices      prometheus.Gauge
+	compiledPlugins       prometheus.Gauge
 	adminHandler          http.Handler
 }
 
@@ -34,6 +43,55 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 	telemetry := &Telemetry{
 		registry:              registry,
 		requestMetricsEnabled: requestMetricsEnabled,
+		activeRevision: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "runtime",
+			Name:      "active_revision",
+			Help:      "Revision of the active immutable runtime snapshot.",
+		}),
+		snapshotApplyDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "gateway",
+			Subsystem: "runtime",
+			Name:      "snapshot_apply_duration_seconds",
+			Help:      "Runtime snapshot apply duration in seconds.",
+			Buckets:   prometheus.DefBuckets,
+		}),
+		snapshotApplyTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "gateway",
+			Subsystem: "runtime",
+			Name:      "snapshot_apply_total",
+			Help:      "Total runtime snapshot apply attempts.",
+		}, []string{"result", "stage", "code"}),
+		compiledRoutes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "runtime",
+			Name:      "compiled_routes",
+			Help:      "Number of routes in the active runtime snapshot.",
+		}),
+		compiledServices: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "runtime",
+			Name:      "compiled_services",
+			Help:      "Number of services in the active runtime snapshot.",
+		}),
+		compiledPlugins: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "runtime",
+			Name:      "compiled_plugins",
+			Help:      "Number of plugin instances in the active runtime snapshot.",
+		}),
+	}
+	for name, collector := range map[string]prometheus.Collector{
+		"active revision":         telemetry.activeRevision,
+		"snapshot apply duration": telemetry.snapshotApplyDuration,
+		"snapshot apply total":    telemetry.snapshotApplyTotal,
+		"compiled routes":         telemetry.compiledRoutes,
+		"compiled services":       telemetry.compiledServices,
+		"compiled plugins":        telemetry.compiledPlugins,
+	} {
+		if err := registry.Register(collector); err != nil {
+			return nil, fmt.Errorf("register %s metric: %w", name, err)
+		}
 	}
 	if requestMetricsEnabled {
 		telemetry.requests = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -89,7 +147,7 @@ func (t *Telemetry) AdminHandler() http.Handler {
 	return t.adminHandler
 }
 
-func (t *Telemetry) Wrap(next http.Handler, routeID string) http.Handler {
+func (t *Telemetry) Wrap(next http.Handler) http.Handler {
 	if !t.requestMetricsEnabled {
 		return next
 	}
@@ -98,10 +156,33 @@ func (t *Telemetry) Wrap(next http.Handler, routeID string) http.Handler {
 		writer := &metricsResponseWriter{ResponseWriter: response}
 		next.ServeHTTP(writer, request)
 		statusClass := strconv.Itoa(writer.statusCode()/100) + "xx"
+		routeID := "__unmatched__"
+		if state, ok := requestctx.From(request.Context()); ok && state.Route != nil && state.Route.ID != "" {
+			routeID = state.Route.ID
+		}
 		labels := []string{routeID, request.Method, statusClass}
 		t.requests.WithLabelValues(labels...).Inc()
 		t.duration.WithLabelValues(labels...).Observe(time.Since(started).Seconds())
 	})
+}
+
+func (t *Telemetry) SnapshotApplied(stats gatewayruntime.Stats) {
+	t.activeRevision.Set(float64(stats.Revision))
+	t.compiledRoutes.Set(float64(stats.RouteCount))
+	t.compiledServices.Set(float64(stats.ServiceCount))
+	t.compiledPlugins.Set(float64(stats.PluginCount))
+	t.snapshotApplyDuration.Observe(stats.BuildDuration.Seconds())
+	t.snapshotApplyTotal.WithLabelValues("applied", "", "").Inc()
+}
+
+func (t *Telemetry) SnapshotRejected(buildErr *gatewayruntime.BuildError, duration time.Duration) {
+	var stage, code string
+	if buildErr != nil {
+		stage = string(buildErr.Stage)
+		code = buildErr.Code
+	}
+	t.snapshotApplyDuration.Observe(duration.Seconds())
+	t.snapshotApplyTotal.WithLabelValues("rejected", stage, code).Inc()
 }
 
 func registerPprof(mux *http.ServeMux) {

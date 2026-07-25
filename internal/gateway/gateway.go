@@ -9,10 +9,14 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/config"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
+	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
 	"github.com/QuanTuanHuy/g-gateway/internal/proxy"
+	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
+	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 	"github.com/QuanTuanHuy/g-gateway/internal/telemetry"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
@@ -34,8 +38,10 @@ type Gateway struct {
 	adminListener net.Listener
 
 	telemetry *telemetry.Telemetry
-	upstream  *upstream.Runtime
+	upstreams *upstream.Table
+	manager   *gatewayruntime.Manager
 	logger    *slog.Logger
+	closing   atomic.Bool
 
 	startMu     sync.Mutex
 	started     bool
@@ -51,32 +57,42 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	if logger == nil {
 		return nil, fmt.Errorf("logger must not be nil")
 	}
-	if len(resources.Routes) != 1 || len(resources.Upstreams) != 1 {
-		return nil, fmt.Errorf("Phase 1 gateway requires exactly one route and one upstream")
-	}
 	certificate, err := tls.LoadX509KeyPair(bootstrap.HTTPS.CertificateFile, bootstrap.HTTPS.PrivateKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load TLS key pair: %w", err)
 	}
-	upstreamRuntime, err := upstream.New(resources.Upstreams[0])
+	upstreamTable, err := upstream.NewTable(resources.Upstreams)
 	if err != nil {
-		return nil, fmt.Errorf("construct upstream runtime: %w", err)
+		return nil, fmt.Errorf("construct upstream table: %w", err)
 	}
-	proxyHandler, err := proxy.New(proxy.Options{
-		Route:               resources.Routes[0],
-		Target:              upstreamRuntime.Target(),
-		Transport:           upstreamRuntime.RoundTripper(),
+	registry, err := plugin.NewBuiltinRegistry()
+	if err != nil {
+		upstreamTable.CloseIdleConnections()
+		return nil, fmt.Errorf("construct plugin registry: %w", err)
+	}
+	builder, err := gatewayruntime.NewBuilder(upstreamTable, registry)
+	if err != nil {
+		upstreamTable.CloseIdleConnections()
+		return nil, fmt.Errorf("construct runtime builder: %w", err)
+	}
+	telemetryRuntime, err := telemetry.New(bootstrap.Telemetry.RequestMetricsEnabled, bootstrap.Telemetry.ProfilingEnabled)
+	if err != nil {
+		upstreamTable.CloseIdleConnections()
+		return nil, fmt.Errorf("construct telemetry: %w", err)
+	}
+	manager := gatewayruntime.NewManager(builder, telemetryRuntime)
+	if err := manager.Apply(1, resources); err != nil {
+		upstreamTable.CloseIdleConnections()
+		return nil, fmt.Errorf("activate initial runtime snapshot: %w", err)
+	}
+	proxyHandler, err := proxy.NewRuntime(proxy.RuntimeOptions{
+		Snapshots:           manager,
 		MaxRequestBodyBytes: bootstrap.Server.MaxRequestBodyBytes,
 		Logger:              logger,
 	})
 	if err != nil {
-		upstreamRuntime.CloseIdleConnections()
+		upstreamTable.CloseIdleConnections()
 		return nil, fmt.Errorf("construct proxy handler: %w", err)
-	}
-	telemetryRuntime, err := telemetry.New(bootstrap.Telemetry.RequestMetricsEnabled, bootstrap.Telemetry.ProfilingEnabled)
-	if err != nil {
-		upstreamRuntime.CloseIdleConnections()
-		return nil, fmt.Errorf("construct telemetry: %w", err)
 	}
 
 	httpProtocols := new(http.Protocols)
@@ -87,7 +103,10 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	adminProtocols := new(http.Protocols)
 	adminProtocols.SetHTTP1(true)
 
-	trafficHandler := recoverPanics(telemetryRuntime.Wrap(proxyHandler, resources.Routes[0].ID), logger)
+	trafficHandler := recoverPanics(
+		requestctx.Middleware(telemetryRuntime.Wrap(proxyHandler)),
+		logger,
+	)
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{certificate},
 		MinVersion:   tls.VersionTLS12,
@@ -96,7 +115,8 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	gateway := &Gateway{
 		tlsConfig:   tlsConfig,
 		telemetry:   telemetryRuntime,
-		upstream:    upstreamRuntime,
+		upstreams:   upstreamTable,
+		manager:     manager,
 		logger:      logger,
 		serveDone:   make(chan struct{}),
 		serveErrors: make(chan error, 3),
@@ -127,6 +147,13 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 		Protocols:         adminProtocols,
 	}
 	return gateway, nil
+}
+
+func (g *Gateway) Apply(revision uint64, resources model.ResourceSet) error {
+	if g.closing.Load() {
+		return fmt.Errorf("GATEWAY_SHUTTING_DOWN: runtime updates are disabled")
+	}
+	return g.manager.Apply(revision, resources)
 }
 
 func (g *Gateway) Start() (Addresses, error) {
@@ -197,6 +224,7 @@ func (g *Gateway) Wait() error {
 }
 
 func (g *Gateway) Shutdown(ctx context.Context) error {
+	g.closing.Store(true)
 	g.shutdownOnce.Do(func() {
 		g.shutdownErr = g.shutdown(ctx)
 	})
@@ -213,7 +241,7 @@ func (g *Gateway) shutdown(ctx context.Context) error {
 	if ctx.Err() != nil {
 		errs = append(errs, g.httpServer.Close(), g.httpsServer.Close())
 	}
-	g.upstream.CloseIdleConnections()
+	g.upstreams.CloseIdleConnections()
 
 	if err := g.adminServer.Shutdown(ctx); err != nil {
 		errs = append(errs, err)
