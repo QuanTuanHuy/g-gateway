@@ -11,8 +11,9 @@ import (
 )
 
 type Runtime struct {
-	target    *url.URL
-	transport *http.Transport
+	target               *url.URL
+	transport            *http.Transport
+	closeIdleConnections func()
 }
 
 func New(resource model.Upstream) (*Runtime, error) {
@@ -45,7 +46,11 @@ func New(resource model.Upstream) (*Runtime, error) {
 		ResponseHeaderTimeout: resource.Transport.ResponseHeaderTimeout,
 	}
 
-	return &Runtime{target: target, transport: transport}, nil
+	return &Runtime{
+		target:               target,
+		transport:            transport,
+		closeIdleConnections: transport.CloseIdleConnections,
+	}, nil
 }
 
 func (r *Runtime) Target() *url.URL {
@@ -58,5 +63,7 @@ func (r *Runtime) RoundTripper() http.RoundTripper {
 }
 
 func (r *Runtime) CloseIdleConnections() {
-	r.transport.CloseIdleConnections()
+	if r.closeIdleConnections != nil {
+		r.closeIdleConnections()
+	}
 }

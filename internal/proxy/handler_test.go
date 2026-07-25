@@ -9,13 +9,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
+	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
+	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
+	"github.com/QuanTuanHuy/g-gateway/internal/runtime"
+	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
 func TestRouteMatchesExactPathAndPreservesRawQuery(t *testing.T) {
@@ -298,19 +301,15 @@ func TestUpstreamResetBeforeHeadersIs502(t *testing.T) {
 func TestUpstreamErrorLogsAreRateLimited(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	target, _ := url.Parse("http://upstream:8080")
-	handler, err := New(Options{
-		Route:  model.Route{ID: "baseline", Match: model.RouteMatch{Path: "/hello", Methods: []string{http.MethodGet}}},
-		Target: target,
-		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	handler := newTestHandlerWithLogger(
+		t,
+		[]string{http.MethodGet},
+		1024,
+		roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return nil, errors.New("upstream unavailable")
 		}),
-		MaxRequestBodyBytes: 1024,
-		Logger:              logger,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+		logger,
+	)
 
 	for range 5 {
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil))
@@ -322,28 +321,136 @@ func TestUpstreamErrorLogsAreRateLimited(t *testing.T) {
 
 func newTestHandler(t *testing.T, methods []string, maxBody int64, transport http.RoundTripper) http.Handler {
 	t.Helper()
-	target, err := url.Parse("http://upstream:8080")
+	return newTestHandlerWithLogger(
+		t,
+		methods,
+		maxBody,
+		transport,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+}
+
+func newTestHandlerWithLogger(
+	t *testing.T,
+	methods []string,
+	maxBody int64,
+	transport http.RoundTripper,
+	logger *slog.Logger,
+) http.Handler {
+	t.Helper()
+	upstreamServer := httptest.NewServer(roundTripperAdapter(transport))
+	t.Cleanup(upstreamServer.Close)
+	resources := testHandlerResources(upstreamServer.URL, methods)
+	table, err := upstream.NewTable(resources.Upstreams)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := New(Options{
-		Route: model.Route{
+	t.Cleanup(table.CloseIdleConnections)
+	registry, err := plugin.NewBuiltinRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := runtime.NewBuilder(table, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := runtime.NewManager(builder, nil)
+	if err := manager.Apply(1, resources); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewRuntime(RuntimeOptions{
+		Snapshots:           manager,
+		MaxRequestBodyBytes: maxBody,
+		Logger:              logger,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	return requestctx.Middleware(handler)
+}
+
+func testHandlerResources(endpoint string, methods []string) model.ResourceSet {
+	return model.ResourceSet{
+		Routes: []model.Route{{
 			ID: "baseline",
 			Match: model.RouteMatch{
 				Path:    "/hello",
-				Methods: methods,
+				Methods: append([]string(nil), methods...),
 			},
 			UpstreamRef: "baseline",
-		},
-		Target:              target,
-		Transport:           transport,
-		MaxRequestBodyBytes: maxBody,
-		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		}},
+		Upstreams: []model.Upstream{{
+			ID:        "baseline",
+			Endpoints: []string{endpoint},
+			Transport: model.TransportConfig{
+				DialTimeout:               time.Second,
+				ResponseHeaderTimeout:     25 * time.Millisecond,
+				IdleConnectionTimeout:     time.Second,
+				MaxIdleConnections:        8,
+				MaxIdleConnectionsPerHost: 8,
+			},
+		}},
 	}
-	return handler
+}
+
+func roundTripperAdapter(transport http.RoundTripper) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		response, err := transport.RoundTrip(request)
+		if err != nil {
+			if request.Context().Err() != nil {
+				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				select {
+				case <-time.After(100 * time.Millisecond):
+				case <-request.Context().Done():
+				}
+				return
+			}
+			hijacker, ok := writer.(http.Hijacker)
+			if !ok {
+				http.Error(writer, "upstream failure", http.StatusInternalServerError)
+				return
+			}
+			connection, _, hijackErr := hijacker.Hijack()
+			if hijackErr == nil {
+				_ = connection.Close()
+			}
+			return
+		}
+		if response.Body != nil {
+			defer response.Body.Close()
+		}
+		for name, values := range response.Header {
+			writer.Header()[name] = append([]string(nil), values...)
+		}
+		for name := range response.Trailer {
+			writer.Header().Add("Trailer", name)
+		}
+		status := response.StatusCode
+		if status == 0 {
+			status = http.StatusOK
+		}
+		writer.WriteHeader(status)
+		if response.Body != nil {
+			buffer := make([]byte, 32*1024)
+			for {
+				count, readErr := response.Body.Read(buffer)
+				if count > 0 {
+					_, _ = writer.Write(buffer[:count])
+					if flusher, ok := writer.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+		}
+		for name, values := range response.Trailer {
+			writer.Header()[name] = append([]string(nil), values...)
+		}
+	})
 }
 
 func assertErrorResponse(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, message string) {

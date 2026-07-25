@@ -3,11 +3,13 @@ package integration_test
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +40,149 @@ func TestGatewayCommandReportsStructuredStartupFailure(t *testing.T) {
 	if event["level"] != "ERROR" || event["msg"] != "gateway startup failed" || event["stage"] != "load_config" {
 		t.Fatalf("startup event=%v", event)
 	}
+}
+
+func TestGatewayCommandServesPhase2RoutesAndPluginsOverHTTP1AndHTTP2(t *testing.T) {
+	binary := buildGatewayCommand(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]string{
+			"path":  request.URL.Path,
+			"route": request.Header.Get("X-Route"),
+		})
+	}))
+	t.Cleanup(upstream.Close)
+	httpAddress := reserveTCPAddress(t)
+	httpsAddress := reserveTCPAddress(t)
+	adminAddress := reserveTCPAddress(t)
+	certFile, keyFile := writeCertificatePair(t)
+	configFile := filepath.Join(t.TempDir(), "phase2.yaml")
+	document := phase2ProcessConfig(
+		httpAddress,
+		httpsAddress,
+		adminAddress,
+		certFile,
+		keyFile,
+		upstream.URL,
+	)
+	if err := os.WriteFile(configFile, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	command := exec.Command(binary, "-config", configFile)
+	command.Stdout = &logs
+	command.Stderr = &logs
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- command.Wait() }()
+	processExited := false
+	t.Cleanup(func() {
+		if processExited {
+			return
+		}
+		_ = command.Process.Kill()
+		select {
+		case <-exited:
+		case <-time.After(time.Second):
+		}
+	})
+	waitForHTTPStatus(t, "http://"+adminAddress+"/readyz", http.StatusOK)
+
+	http1Transport := &http.Transport{}
+	http1Protocols := new(http.Protocols)
+	http1Protocols.SetHTTP1(true)
+	http1Transport.Protocols = http1Protocols
+	t.Cleanup(http1Transport.CloseIdleConnections)
+	http2Transport := &http.Transport{
+		TLSClientConfig:   insecureProcessTLSConfig(),
+		ForceAttemptHTTP2: true,
+	}
+	http2Protocols := new(http.Protocols)
+	http2Protocols.SetHTTP1(true)
+	http2Protocols.SetHTTP2(true)
+	http2Transport.Protocols = http2Protocols
+	t.Cleanup(http2Transport.CloseIdleConnections)
+
+	tests := []struct {
+		name       string
+		client     *http.Client
+		baseURL    string
+		protoMajor int
+	}{
+		{
+			name:       "HTTP/1.1",
+			client:     &http.Client{Transport: http1Transport},
+			baseURL:    "http://" + httpAddress,
+			protoMajor: 1,
+		},
+		{
+			name:       "HTTP/2 TLS",
+			client:     &http.Client{Transport: http2Transport},
+			baseURL:    "https://" + httpsAddress,
+			protoMajor: 2,
+		},
+	}
+	for _, protocol := range tests {
+		t.Run(protocol.name, func(t *testing.T) {
+			exactRequest, _ := http.NewRequest(http.MethodGet, protocol.baseURL+"/health", nil)
+			exactRequest.Header.Set("X-Request-ID", "phase2-safe-id")
+			exactResponse, err := protocol.client.Do(exactRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var exactBody map[string]string
+			if err := json.NewDecoder(exactResponse.Body).Decode(&exactBody); err != nil {
+				_ = exactResponse.Body.Close()
+				t.Fatal(err)
+			}
+			_ = exactResponse.Body.Close()
+			if exactResponse.StatusCode != http.StatusOK ||
+				exactResponse.ProtoMajor != protocol.protoMajor ||
+				exactBody["path"] != "/health" ||
+				exactResponse.Header.Get("X-Request-ID") != "phase2-safe-id" {
+				t.Fatalf(
+					"exact response = status %d proto %s body %v request-id %q",
+					exactResponse.StatusCode,
+					exactResponse.Proto,
+					exactBody,
+					exactResponse.Header.Get("X-Request-ID"),
+				)
+			}
+
+			parameterResponse, err := protocol.client.Get(protocol.baseURL + "/users/42")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parameterBody map[string]string
+			if err := json.NewDecoder(parameterResponse.Body).Decode(&parameterBody); err != nil {
+				_ = parameterResponse.Body.Close()
+				t.Fatal(err)
+			}
+			_ = parameterResponse.Body.Close()
+			if parameterResponse.StatusCode != http.StatusOK ||
+				parameterResponse.ProtoMajor != protocol.protoMajor ||
+				parameterBody["path"] != "/users/42" ||
+				parameterBody["route"] != "parameter" ||
+				parameterResponse.Header.Get("X-Gateway") != "g-gateway" {
+				t.Fatalf(
+					"parameter response = status %d proto %s body %v X-Gateway %q",
+					parameterResponse.StatusCode,
+					parameterResponse.Proto,
+					parameterBody,
+					parameterResponse.Header.Get("X-Gateway"),
+				)
+			}
+		})
+	}
+
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-exited
+	processExited = true
 }
 
 func TestGatewayCommandSIGTERMDrainsInFlightRequest(t *testing.T) {
@@ -243,4 +388,77 @@ upstreams:
       max_idle_connections: 4
       max_idle_connections_per_host: 4
 `, httpAddress, httpsAddress, strings.ReplaceAll(certFile, "'", "''"), strings.ReplaceAll(keyFile, "'", "''"), adminAddress, upstream)
+}
+
+func phase2ProcessConfig(httpAddress, httpsAddress, adminAddress, certFile, keyFile, upstream string) string {
+	return fmt.Sprintf(`api_version: gateway/v1alpha2
+
+listeners:
+  http:
+    address: %s
+  https:
+    address: %s
+    certificate_file: '%s'
+    private_key_file: '%s'
+  admin:
+    address: %s
+
+server:
+  read_header_timeout: 1s
+  idle_timeout: 1m
+  shutdown_timeout: 3s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 1048576
+
+telemetry:
+  request_metrics_enabled: false
+  profiling_enabled: false
+
+routes:
+  - id: exact-health
+    priority: 100
+    match:
+      path: /health
+      methods: [GET]
+    upstream_ref: phase2
+    plugins:
+      - name: request-id
+        enabled: true
+        config:
+          header_name: X-Request-ID
+  - id: parameter-users
+    priority: 50
+    match:
+      path: /users/{id}
+      methods: [GET]
+    service_ref: users
+    plugins:
+      - name: header-rewrite
+        enabled: true
+        config:
+          request:
+            set:
+              X-Route: parameter
+          response:
+            set:
+              X-Gateway: g-gateway
+
+services:
+  - id: users
+    upstream_ref: phase2
+
+upstreams:
+  - id: phase2
+    endpoints: [%s]
+    transport:
+      dial_timeout: 1s
+      response_header_timeout: 3s
+      idle_connection_timeout: 1m
+      max_idle_connections: 8
+      max_idle_connections_per_host: 8
+`, httpAddress, httpsAddress, strings.ReplaceAll(certFile, "'", "''"), strings.ReplaceAll(keyFile, "'", "''"), adminAddress, upstream)
+}
+
+func insecureProcessTLSConfig() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true} // Test certificate is generated per test.
 }

@@ -12,16 +12,16 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 )
 
-const apiVersion = "gateway/v1alpha1"
+const (
+	apiVersionV1Alpha1 = "gateway/v1alpha1"
+	apiVersionV1Alpha2 = "gateway/v1alpha2"
+)
 
-func validate(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
-	if version != apiVersion {
-		return fmt.Errorf("api_version: got %q, want %q", version, apiVersion)
+func validateV1(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha1 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha1)
 	}
-	if err := validateListeners(*bootstrap); err != nil {
-		return err
-	}
-	if err := validateServer(bootstrap.Server); err != nil {
+	if err := validateBootstrap(*bootstrap); err != nil {
 		return err
 	}
 	if err := validateResourceIDs(*resources); err != nil {
@@ -40,6 +40,47 @@ func validate(version string, bootstrap *BootstrapConfig, resources *model.Resou
 		return err
 	}
 	return nil
+}
+
+func validateV2(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha2 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha2)
+	}
+	if err := validateBootstrap(*bootstrap); err != nil {
+		return err
+	}
+	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if len(resources.Routes) == 0 {
+		return fmt.Errorf("routes: must contain at least one route")
+	}
+	if len(resources.Upstreams) == 0 {
+		return fmt.Errorf("upstreams: must contain at least one upstream")
+	}
+	for i := range resources.Upstreams {
+		if err := validateUpstream(&resources.Upstreams[i], i); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Services {
+		if err := validateService(&resources.Services[i], i, resources.Upstreams); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Routes {
+		if err := validateRouteV2(&resources.Routes[i], i, resources.Services, resources.Upstreams); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateBootstrap(bootstrap BootstrapConfig) error {
+	if err := validateListeners(bootstrap); err != nil {
+		return err
+	}
+	return validateServer(bootstrap.Server)
 }
 
 func validateListeners(bootstrap BootstrapConfig) error {
@@ -139,6 +180,18 @@ func validateResourceIDs(resources model.ResourceSet) error {
 		routeIDs[id] = struct{}{}
 	}
 
+	serviceIDs := make(map[string]struct{}, len(resources.Services))
+	for i := range resources.Services {
+		id := strings.TrimSpace(resources.Services[i].ID)
+		if id == "" {
+			return fmt.Errorf("services[%d].id: must not be empty", i)
+		}
+		if _, ok := serviceIDs[id]; ok {
+			return fmt.Errorf("duplicate service id %q", id)
+		}
+		serviceIDs[id] = struct{}{}
+	}
+
 	upstreamIDs := make(map[string]struct{}, len(resources.Upstreams))
 	for i := range resources.Upstreams {
 		id := strings.TrimSpace(resources.Upstreams[i].ID)
@@ -153,37 +206,123 @@ func validateResourceIDs(resources model.ResourceSet) error {
 	return nil
 }
 
-func validateRoute(route *model.Route, index int, upstreams []model.Upstream) error {
-	if !strings.HasPrefix(route.Match.Path, "/") {
-		return fmt.Errorf("routes[%d].match.path: must be an absolute path", index)
+func validateRouteV2(route *model.Route, index int, services []model.Service, upstreams []model.Upstream) error {
+	if err := validateRouteMatch(&route.Match, index); err != nil {
+		return err
 	}
-	if strings.ContainsAny(route.Match.Path, "?#") {
-		return fmt.Errorf("routes[%d].match.path: query and fragment are not allowed", index)
+	if (route.ServiceRef == "") == (route.UpstreamRef == "") {
+		return fmt.Errorf("routes[%d]: exactly one of service_ref or upstream_ref must be set", index)
 	}
-	if len(route.Match.Methods) == 0 {
-		return fmt.Errorf("routes[%d].match.methods: must not be empty", index)
+	if route.ServiceRef != "" && !serviceExists(services, route.ServiceRef) {
+		return fmt.Errorf("routes[%d].service_ref: %q does not resolve", index, route.ServiceRef)
 	}
-	seenMethods := make(map[string]struct{}, len(route.Match.Methods))
-	for i, method := range route.Match.Methods {
+	if route.UpstreamRef != "" && !upstreamExists(upstreams, route.UpstreamRef) {
+		return fmt.Errorf("routes[%d].upstream_ref: %q does not resolve", index, route.UpstreamRef)
+	}
+	if err := validatePredicates(route.Match.Headers, fmt.Sprintf("routes[%d].match.headers", index)); err != nil {
+		return err
+	}
+	if err := validatePredicates(route.Match.Queries, fmt.Sprintf("routes[%d].match.queries", index)); err != nil {
+		return err
+	}
+	return validatePluginAttachments(route.Plugins, fmt.Sprintf("routes[%d].plugins", index))
+}
+
+func validateService(service *model.Service, index int, upstreams []model.Upstream) error {
+	if !upstreamExists(upstreams, service.UpstreamRef) {
+		return fmt.Errorf("services[%d].upstream_ref: %q does not resolve", index, service.UpstreamRef)
+	}
+	return validatePluginAttachments(service.Plugins, fmt.Sprintf("services[%d].plugins", index))
+}
+
+func validateRouteMatch(match *model.RouteMatch, routeIndex int) error {
+	if !strings.HasPrefix(match.Path, "/") {
+		return fmt.Errorf("routes[%d].match.path: must be an absolute path", routeIndex)
+	}
+	if strings.ContainsAny(match.Path, "?#") {
+		return fmt.Errorf("routes[%d].match.path: query and fragment are not allowed", routeIndex)
+	}
+	if len(match.Methods) == 0 {
+		return fmt.Errorf("routes[%d].match.methods: must not be empty", routeIndex)
+	}
+	seenMethods := make(map[string]struct{}, len(match.Methods))
+	for i, method := range match.Methods {
 		if !validHTTPToken(method) {
-			return fmt.Errorf("routes[%d].match.methods[%d]: invalid HTTP method %q", index, i, method)
+			return fmt.Errorf("routes[%d].match.methods[%d]: invalid HTTP method %q", routeIndex, i, method)
 		}
 		method = strings.ToUpper(method)
 		if _, ok := seenMethods[method]; ok {
-			return fmt.Errorf("routes[%d].match.methods: duplicate method %q", index, method)
+			return fmt.Errorf("routes[%d].match.methods: duplicate method %q", routeIndex, method)
 		}
 		seenMethods[method] = struct{}{}
-		route.Match.Methods[i] = method
+		match.Methods[i] = method
 	}
+	return nil
+}
 
-	found := false
-	for _, upstream := range upstreams {
-		if upstream.ID == route.UpstreamRef {
-			found = true
-			break
+func validatePredicates(predicates []model.Predicate, field string) error {
+	for i, predicate := range predicates {
+		if strings.TrimSpace(predicate.Name) == "" {
+			return fmt.Errorf("%s[%d].name: must not be empty", field, i)
+		}
+		switch predicate.Operator {
+		case model.PredicateExists, model.PredicateNotExists:
+			if len(predicate.Values) != 0 {
+				return fmt.Errorf("%s[%d].values: operator %q requires no values", field, i, predicate.Operator)
+			}
+		case model.PredicateEquals, model.PredicateNotEquals:
+			if len(predicate.Values) != 1 {
+				return fmt.Errorf("%s[%d].values: operator %q requires exactly one value", field, i, predicate.Operator)
+			}
+		case model.PredicateOneOf:
+			if len(predicate.Values) == 0 {
+				return fmt.Errorf("%s[%d].values: operator %q requires at least one value", field, i, predicate.Operator)
+			}
+		default:
+			return fmt.Errorf("%s[%d].operator: unsupported %q", field, i, predicate.Operator)
 		}
 	}
-	if !found {
+	return nil
+}
+
+func validatePluginAttachments(plugins []model.PluginAttachment, field string) error {
+	seen := make(map[string]struct{}, len(plugins))
+	for i, plugin := range plugins {
+		if strings.TrimSpace(plugin.Name) == "" {
+			return fmt.Errorf("%s[%d].name: must not be empty", field, i)
+		}
+		if _, ok := seen[plugin.Name]; ok {
+			return fmt.Errorf("%s: duplicate plugin name %q", field, plugin.Name)
+		}
+		seen[plugin.Name] = struct{}{}
+	}
+	return nil
+}
+
+func serviceExists(services []model.Service, id string) bool {
+	for _, service := range services {
+		if service.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func upstreamExists(upstreams []model.Upstream, id string) bool {
+	for _, upstream := range upstreams {
+		if upstream.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func validateRoute(route *model.Route, index int, upstreams []model.Upstream) error {
+	if err := validateRouteMatch(&route.Match, index); err != nil {
+		return err
+	}
+
+	if !upstreamExists(upstreams, route.UpstreamRef) {
 		return fmt.Errorf("routes[%d].upstream_ref: %q does not resolve", index, route.UpstreamRef)
 	}
 	return nil

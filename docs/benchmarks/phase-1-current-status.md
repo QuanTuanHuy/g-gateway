@@ -12,7 +12,7 @@ Phase 1 đã có một benchmark harness hợp lệ và một clean smoke-all ho
 
 Kết quả hiệu năng hiện tại là `provisional_miss`: Go đạt ngưỡng parity ở 2/14 scenario/payload combinations. Hai trường hợp đạt là HTTP/1.1 với payload 64 KiB, cả cleartext và TLS. Khoảng cách lớn nhất nằm ở HTTP/2/TLS và một số payload nhỏ/trung bình.
 
-Đây chưa phải kết luận hiệu năng chính thức và Phase 1 chưa được acceptance hoàn toàn. Evidence hiện tại chỉ là smoke run trên Docker Desktop. Canonical compare-all gồm năm lần lặp 60 giây và profiling sau parity miss vẫn chưa được thực thi.
+Đây chưa phải kết luận hiệu năng chính thức. Ngày 2026-07-23, Phase 1 được chấp nhận để tiếp tục roadmap dựa trên correctness và reproducible smoke evidence; quyết định đó không có nghĩa đã đạt APISIX parity. Canonical compare-all gồm năm lần lặp 60 giây và profiling sau parity miss vẫn chưa được thực thi và phải hoàn tất trước production certification.
 
 ## Tổng quan evidence
 
@@ -99,12 +99,12 @@ Direct headroom từ 4.68× đến 10.99× cho thấy các smoke measurements kh
 - Standalone APISIX topology không dùng etcd hoặc Admin API.
 - Benchmark cleanup không để lại target/upstream/load-generator containers hoặc network.
 
-## Gate còn thiếu
+## Performance evidence còn thiếu
 
 1. Chạy canonical compare-all: 15 giây warm-up, năm repetitions × 60 giây cho mỗi scenario/payload.
 2. Nếu kết quả vẫn là `provisional_miss`, chạy lại scenario miss nặng nhất ngoài comparison sample với profiling bật.
 3. Thu CPU profile 30 giây, heap profile và Docker CPU/memory traces cho Go; thu resource traces tương ứng cho APISIX.
-4. Chỉ khi các blocking gates hoàn tất mới đổi design status thành `Implemented; provisional benchmark captured`.
+4. Các mục trên là performance debt không còn chặn việc bắt đầu Phase 2.
 5. Parity chính thức vẫn phải được xác nhận lại trên dedicated Linux trong Phase 7.
 
 Lệnh compare tiếp theo:
