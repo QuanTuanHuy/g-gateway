@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -211,15 +212,20 @@ func NormalizeRequestHost(authority string) (string, error) {
 	}
 
 	host := authority
-	if net.ParseIP(authority) != nil {
-		host = authority
-	} else if strings.HasPrefix(authority, "[") || strings.ContainsRune(authority, ':') {
+	colonCount := strings.Count(authority, ":")
+	if colonCount > 1 && !strings.HasPrefix(authority, "[") {
+		if _, err := netip.ParseAddr(authority); err != nil {
+			return "", fmt.Errorf("malformed host authority %q: %w", authority, err)
+		}
+	} else if strings.HasPrefix(authority, "[") || colonCount == 1 {
 		parsedHost, port, err := net.SplitHostPort(authority)
 		if err != nil {
 			return "", fmt.Errorf("malformed host authority %q: %w", authority, err)
 		}
-		if strings.HasPrefix(authority, "[") && net.ParseIP(parsedHost) == nil {
-			return "", fmt.Errorf("malformed bracketed host authority %q", authority)
+		if strings.HasPrefix(authority, "[") {
+			if _, err := netip.ParseAddr(parsedHost); err != nil {
+				return "", fmt.Errorf("malformed bracketed host authority %q", authority)
+			}
 		}
 		number, err := strconv.Atoi(port)
 		if err != nil || number < 0 || number > 65535 {

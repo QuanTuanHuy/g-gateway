@@ -203,6 +203,27 @@ func TestStaticMatchAllocations(t *testing.T) {
 	}
 }
 
+func TestExactHostStaticMatchAllocations(t *testing.T) {
+	compiled := mustCompile(t, []RouteSpec{{
+		Index: 0,
+		ID:    "exact-host-static",
+		Match: model.RouteMatch{
+			Hosts:   []string{"sentinel.bench.test"},
+			Path:    "/__sentinel/static",
+			Methods: []string{"GET"},
+		},
+	}})
+	request := httptest.NewRequest(http.MethodGet, "http://sentinel.bench.test/__sentinel/static", nil)
+	if got := testing.AllocsPerRun(1000, func() {
+		result, err := compiled.Match(request)
+		if err != nil || !result.Found {
+			panic("exact-host static route did not match")
+		}
+	}); got != 0 {
+		t.Fatalf("allocations = %f, want 0", got)
+	}
+}
+
 func mustCompile(t *testing.T, routes []RouteSpec) *Router {
 	t.Helper()
 	compiled, err := Compile(routes)

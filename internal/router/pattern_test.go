@@ -156,6 +156,17 @@ func TestHostRejectsMalformedAuthoritiesAndPatterns(t *testing.T) {
 	}
 }
 
+func TestNormalizeLowercaseDNSHostAllocations(t *testing.T) {
+	if got := testing.AllocsPerRun(1000, func() {
+		host, err := NormalizeRequestHost("sentinel.bench.test")
+		if err != nil || host != "sentinel.bench.test" {
+			panic("host normalization failed")
+		}
+	}); got != 0 {
+		t.Fatalf("allocations = %f, want 0", got)
+	}
+}
+
 func materializeParams(path string, spans []requestctx.ParamSpan) map[string]string {
 	if len(spans) == 0 {
 		return nil
