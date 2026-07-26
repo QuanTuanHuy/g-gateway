@@ -107,9 +107,11 @@ func TestTableClosesConstructedRuntimesAfterPartialFailure(t *testing.T) {
 			return nil, err
 		}
 		return &Runtime{
-			target: target,
-			closeIdleConnections: func() {
-				closed++
+			endpoint: &endpointRuntime{target: target},
+			transport: &transportRuntime{
+				closeIdleConnections: func() {
+					closed++
+				},
 			},
 		}, nil
 	}
