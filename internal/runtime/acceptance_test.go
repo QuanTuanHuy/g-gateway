@@ -83,24 +83,32 @@ func TestPhase2Acceptance(t *testing.T) {
 		}
 		revision = model.ResourceSet{}
 	}
+	waitForRuntimeReaper(t, manager)
 	goruntime.GC()
 	goruntime.GC()
 	var steadyState goruntime.MemStats
 	goruntime.ReadMemStats(&steadyState)
 	steadyStateHeap := heapDelta(steadyState.HeapAlloc, baseline.HeapAlloc)
 
-	active := manager.Load()
-	if active == nil || active.Revision() != uint64(swapCount+1) {
-		t.Fatalf("active snapshot = %#v, want revision %d", active, swapCount+1)
-	}
-	for _, position := range []string{"first", "middle", "last"} {
-		sentinel := metadata.Sentinels[position]
-		request := httptest.NewRequest(http.MethodGet, sentinel.URL, nil)
-		match, err := active.Match(request)
-		if err != nil || !match.Found || match.Route.Meta().ID != sentinel.RouteID {
-			t.Fatalf("%s sentinel match = %+v, %v", position, match, err)
+	func() {
+		lease, ok := manager.Acquire()
+		if !ok {
+			t.Fatal("Acquire() rejected active acceptance snapshot")
 		}
-	}
+		defer lease.Release()
+		active := lease.Snapshot()
+		if active == nil || active.Revision() != uint64(swapCount+1) {
+			t.Fatalf("active snapshot = %#v, want revision %d", active, swapCount+1)
+		}
+		for _, position := range []string{"first", "middle", "last"} {
+			sentinel := metadata.Sentinels[position]
+			request := httptest.NewRequest(http.MethodGet, sentinel.URL, nil)
+			match, err := active.Match(request)
+			if err != nil || !match.Found || match.Route.Meta().ID != sentinel.RouteID {
+				t.Fatalf("%s sentinel match = %+v, %v", position, match, err)
+			}
+		}
+	}()
 
 	t.Logf(
 		"routes=%d swaps=%d compile=%s one_snapshot_heap=%d steady_state_heap=%d go=%s cpus=%d checksum=%s seed=%d",
@@ -149,4 +157,19 @@ func heapDelta(after, before uint64) uint64 {
 		return 0
 	}
 	return after - before
+}
+
+func waitForRuntimeReaper(t *testing.T, manager *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if manager.UpstreamStats().RetiredPlanSets == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf(
+		"retired plan sets = %d, want 0",
+		manager.UpstreamStats().RetiredPlanSets,
+	)
 }

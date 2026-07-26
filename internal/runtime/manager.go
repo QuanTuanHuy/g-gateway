@@ -137,20 +137,20 @@ func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 	return nil
 }
 
-func (m *Manager) Acquire() (*Lease, bool) {
+func (m *Manager) Acquire() (Lease, bool) {
 	if m == nil {
-		return nil, false
+		return Lease{}, false
 	}
 	for {
 		snapshot := m.active.Load()
 		if snapshot == nil || snapshot.plans == nil {
-			return nil, false
+			return Lease{}, false
 		}
 		if snapshot.plans.TryAcquire() {
-			return &Lease{snapshot: snapshot, plans: snapshot.plans}, true
+			return Lease{snapshot: snapshot, plans: snapshot.plans}, true
 		}
 		if m.active.Load() == snapshot {
-			return nil, false
+			return Lease{}, false
 		}
 	}
 }
