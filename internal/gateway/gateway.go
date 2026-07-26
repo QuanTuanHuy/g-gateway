@@ -39,6 +39,7 @@ type Gateway struct {
 	adminListener net.Listener
 
 	telemetry *telemetry.Telemetry
+	lifecycle *lifecycleObserver
 	manager   *gatewayruntime.Manager
 	logger    *slog.Logger
 	closing   atomic.Bool
@@ -74,7 +75,8 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	if maxRetiredSnapshots == 0 {
 		maxRetiredSnapshots = config.DefaultMaxRetiredSnapshots
 	}
-	upstreamRegistry, err := upstream.NewRegistry(maxRetiredSnapshots, nil)
+	lifecycle := newLifecycleObserver(telemetryRuntime, logger)
+	upstreamRegistry, err := upstream.NewRegistry(maxRetiredSnapshots, lifecycle)
 	if err != nil {
 		return nil, fmt.Errorf("construct upstream registry: %w", err)
 	}
@@ -88,11 +90,12 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 		closeRegistry()
 		return nil, fmt.Errorf("construct runtime builder: %w", err)
 	}
-	manager := gatewayruntime.NewManager(builder, upstreamRegistry, telemetryRuntime)
+	manager := gatewayruntime.NewManager(builder, upstreamRegistry, lifecycle)
 	closeManager := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = manager.Close(ctx)
+		lifecycle.ShutdownCleanup(manager.UpstreamStats())
 	}
 	if err := manager.Apply(1, resources); err != nil {
 		closeManager()
@@ -124,6 +127,7 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	gateway := &Gateway{
 		tlsConfig:   tlsConfig,
 		telemetry:   telemetryRuntime,
+		lifecycle:   lifecycle,
 		manager:     manager,
 		logger:      logger,
 		serveDone:   make(chan struct{}),
@@ -271,6 +275,7 @@ func (g *Gateway) shutdown(ctx context.Context) error {
 	if err := g.manager.Close(managerCtx); err != nil {
 		errs = append(errs, err)
 	}
+	g.lifecycle.ShutdownCleanup(g.manager.UpstreamStats())
 
 	if err := g.adminServer.Shutdown(ctx); err != nil {
 		errs = append(errs, err)

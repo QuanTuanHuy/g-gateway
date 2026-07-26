@@ -214,6 +214,10 @@ func (panicRegistryObserver) RegistryRolledBack(PrepareStats) {
 	panic("rolled back")
 }
 
+func (panicRegistryObserver) RegistryRetired(RegistryStats) {
+	panic("retired")
+}
+
 func (panicRegistryObserver) RegistryCleaned(CleanupStats) {
 	panic("cleaned")
 }

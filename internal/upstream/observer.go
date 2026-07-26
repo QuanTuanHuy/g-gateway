@@ -22,6 +22,7 @@ type CleanupStats struct {
 type Observer interface {
 	RegistryPrepared(PrepareStats)
 	RegistryRolledBack(PrepareStats)
+	RegistryRetired(RegistryStats)
 	RegistryCleaned(CleanupStats)
 	RegistryError(code string, err error)
 }

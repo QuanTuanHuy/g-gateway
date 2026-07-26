@@ -345,7 +345,9 @@ func (r *Registry) registerRetired(set *PlanSet) {
 	}
 	r.activePlanSets--
 	r.retired = append(r.retired, set)
+	stats := r.statsLocked()
 	r.mu.Unlock()
+	r.notifyRetired(stats)
 	r.signalReaper()
 }
 
@@ -417,6 +419,10 @@ func (r *Registry) notifyPrepared(stats PrepareStats) {
 
 func (r *Registry) notifyRolledBack(stats PrepareStats) {
 	r.observe(func(observer Observer) { observer.RegistryRolledBack(stats) })
+}
+
+func (r *Registry) notifyRetired(stats RegistryStats) {
+	r.observe(func(observer Observer) { observer.RegistryRetired(stats) })
 }
 
 func (r *Registry) notifyCleaned(stats CleanupStats) {
