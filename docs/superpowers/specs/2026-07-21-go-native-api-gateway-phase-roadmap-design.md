@@ -150,6 +150,12 @@ Chứng minh request hot path chỉ đọc immutable state và route matching sc
 - Route-first/middle/last đạt relative scalability target so với Go one-route baseline; APISIX dùng làm comparative evidence theo Phase 2 design spec.
 - Memory sau nhiều snapshot swap trở về steady state.
 
+### 6.5. Trạng thái ngày 2026-07-26
+
+Phase 2 đang ở trạng thái `implementation complete; canonical evidence pending`. Runtime snapshot, router kernel, plugin pipeline, proxy integration, deterministic dataset và provisional compile/memory/microbenchmark acceptance đã được triển khai. Isolated end-to-end benchmark/report của Task 16 được hoãn toàn bộ.
+
+[Phase 2 current status](../../benchmarks/phase-2-current-status.md) ghi evidence đã có và các gate còn thiếu. [Deferred-benchmark handoff design](2026-07-26-phase-2-deferred-benchmark-handoff-design.md) ghi quyết định scheduling. Trạng thái này cho phép bắt đầu thiết kế Phase 3 nhưng không phải APISIX parity hoặc production certification.
+
 ## 7. Phase 3 — Upstream resilience
 
 ### 7.1. Mục tiêu
@@ -185,6 +191,12 @@ Tạo standalone data plane đủ tin cậy để proxy traffic thật trước 
 - TLS certificate thay đổi không restart listener.
 - Upstream failure/recovery integration tests đạt.
 - Load balancing, TLS, health và retry benchmark scenarios không vi phạm comparative gate liên quan.
+
+### 7.5. Entry note
+
+Phase 3 design được phép bắt đầu từ canonical IDs, immutable request snapshot, atomic activation, compiled router/plugin pipeline, typed request context và ranh giới immutable-config/mutable-upstream-runtime đã khóa ở Phase 2.
+
+Phase 3 không được đưa mutable health/pool state vào `RuntimeSnapshot`, thay routing precedence, hoặc làm mất Task 16 và các Phase 2 performance gates đang pending.
 
 ## 8. Phase 4 — Control plane end-to-end
 
@@ -361,6 +373,6 @@ Thay đổi chỉ ảnh hưởng implementation nội bộ của phase hiện t�
 
 ## 14. Bước tiếp theo
 
-Bước tiếp theo duy nhất sau khi roadmap được review là brainstorm Phase 1 — Proxy baseline và benchmark harness.
+Bước tiếp theo duy nhất là brainstorm Phase 3 — Upstream resilience. Phase 3 phải nhận các contract và performance debt được ghi trong Phase 2 current status; implementation chỉ bắt đầu sau khi Phase 3 design và plan được duyệt.
 
-Không lập implementation plan cho Phase 1 hoặc phase khác trước khi Phase 1 design spec được duyệt.
+Không lập implementation plan Phase 3 trước khi Phase 3 design spec được duyệt.
