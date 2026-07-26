@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -162,7 +163,7 @@ func TestPlanSetDoubleReleasePanicsInsteadOfUnderflow(t *testing.T) {
 		testUpstream("users", testEndpoint("http://users:8080", 1)),
 	})
 	set := candidate.Commit()
-	set.Release()
+	set.Retire()
 	defer func() {
 		if recover() == nil {
 			t.Fatal("second Release did not panic")
@@ -203,6 +204,13 @@ func mustRegistry(t testing.TB, maxRetiredSnapshots int, observer Observer) *Reg
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := registry.Close(ctx); err != nil {
+			t.Errorf("Registry.Close() error = %v", err)
+		}
+	})
 	return registry
 }
 

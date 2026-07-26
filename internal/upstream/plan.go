@@ -147,7 +147,7 @@ func (s *PlanSet) Release() {
 			continue
 		}
 		if current == 1 {
-			s.registry.finalizePlanSet(s)
+			s.registry.signalReaper()
 		}
 		return
 	}
@@ -157,6 +157,6 @@ func (s *PlanSet) Retire() {
 	if s == nil || !s.retired.CompareAndSwap(false, true) {
 		return
 	}
-	s.registry.markRetired(s)
+	s.registry.registerRetired(s)
 	s.Release()
 }

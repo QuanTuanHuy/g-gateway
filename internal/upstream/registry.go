@@ -46,7 +46,11 @@ type Registry struct {
 	transports          map[transportKey]*transportEntry
 	selections          map[selectionKey]*selectionEntry
 	activePlanSets      int
-	retiredPlanSets     int
+	retired             []*PlanSet
+	reapWake            chan struct{}
+	reapStop            chan struct{}
+	reapDone            chan struct{}
+	stopReaperOnce      sync.Once
 }
 
 type Candidate struct {
@@ -61,16 +65,25 @@ func NewRegistry(maxRetiredSnapshots int, observer Observer) (*Registry, error) 
 	if maxRetiredSnapshots < 1 || maxRetiredSnapshots > 1024 {
 		return nil, fmt.Errorf("max retired snapshots must be between 1 and 1024")
 	}
-	return &Registry{
+	registry := &Registry{
 		maxRetiredSnapshots: maxRetiredSnapshots,
 		observer:            observer,
 		endpoints:           make(map[string]*endpointEntry),
 		transports:          make(map[transportKey]*transportEntry),
 		selections:          make(map[selectionKey]*selectionEntry),
-	}, nil
+		reapWake:            make(chan struct{}, 1),
+		reapStop:            make(chan struct{}),
+		reapDone:            make(chan struct{}),
+	}
+	go registry.runReaper()
+	return registry, nil
 }
 
 func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
+	if err := r.prepareAllowed(); err != nil {
+		r.notifyError(err.Code, err)
+		return nil, err
+	}
 	normalized, err := Normalize(resources)
 	if err != nil {
 		r.notifyError(configErrorCode(err), err)
@@ -78,9 +91,8 @@ func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 	}
 
 	r.mu.Lock()
-	if r.closed {
+	if err := r.prepareErrorLocked(); err != nil {
 		r.mu.Unlock()
-		err := configError("REGISTRY_CLOSED", "upstreams", "", fmt.Errorf("registry is closed"))
 		r.notifyError(err.Code, err)
 		return nil, err
 	}
@@ -231,7 +243,7 @@ func (r *Registry) statsLocked() RegistryStats {
 		LiveTransports:      len(r.transports),
 		LiveSelectionStates: len(r.selections),
 		ActivePlanSets:      r.activePlanSets,
-		RetiredPlanSets:     r.retiredPlanSets,
+		RetiredPlanSets:     len(r.retired),
 	}
 }
 
@@ -239,16 +251,26 @@ func (r *Registry) Close(ctx context.Context) error {
 	r.mu.Lock()
 	r.closed = true
 	r.mu.Unlock()
+	r.signalReaper()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		r.reapNow()
 		stats := r.Stats()
 		if stats.LiveEndpoints == 0 &&
 			stats.LiveTransports == 0 &&
 			stats.LiveSelectionStates == 0 &&
 			stats.ActivePlanSets == 0 &&
 			stats.RetiredPlanSets == 0 {
-			return nil
+			r.stopReaperOnce.Do(func() {
+				close(r.reapStop)
+			})
+			select {
+			case <-r.reapDone:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -256,6 +278,27 @@ func (r *Registry) Close(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (r *Registry) prepareAllowed() *ConfigError {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.prepareErrorLocked()
+}
+
+func (r *Registry) prepareErrorLocked() *ConfigError {
+	if r.closed {
+		return configError("REGISTRY_CLOSED", "upstreams", "", fmt.Errorf("registry is closed"))
+	}
+	if len(r.retired) >= r.maxRetiredSnapshots {
+		return configError(
+			"RETIRED_SNAPSHOT_LIMIT",
+			"runtime.max_retired_snapshots",
+			"",
+			fmt.Errorf("retired plan sets reached %d", r.maxRetiredSnapshots),
+		)
+	}
+	return nil
 }
 
 func (c *Candidate) Plan(id string) (*Plan, bool) {
@@ -294,39 +337,16 @@ func (c *Candidate) Rollback() {
 	c.registry.notifyRolledBack(c.stats)
 }
 
-func (r *Registry) markRetired(set *PlanSet) {
+func (r *Registry) registerRetired(set *PlanSet) {
 	r.mu.Lock()
 	if r.activePlanSets <= 0 {
 		r.mu.Unlock()
 		panic("upstream registry active plan-set underflow")
 	}
 	r.activePlanSets--
-	r.retiredPlanSets++
+	r.retired = append(r.retired, set)
 	r.mu.Unlock()
-}
-
-func (r *Registry) finalizePlanSet(set *PlanSet) {
-	if !set.finalized.CompareAndSwap(false, true) {
-		return
-	}
-	r.mu.Lock()
-	if set.retired.Load() {
-		if r.retiredPlanSets <= 0 {
-			r.mu.Unlock()
-			panic("upstream registry retired plan-set underflow")
-		}
-		r.retiredPlanSets--
-	} else {
-		if r.activePlanSets <= 0 {
-			r.mu.Unlock()
-			panic("upstream registry active plan-set underflow")
-		}
-		r.activePlanSets--
-	}
-	cleanup, transports := r.releaseRefsLocked(set.owned)
-	r.mu.Unlock()
-	closeTransports(transports)
-	r.notifyCleaned(cleanup)
+	r.signalReaper()
 }
 
 func (r *Registry) releaseRefs(owned resourceRefs) (CleanupStats, []*transportRuntime) {
