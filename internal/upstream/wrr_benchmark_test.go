@@ -8,7 +8,7 @@ import (
 var benchmarkWRRIndex uint32
 
 func BenchmarkWRRSelect(b *testing.B) {
-	for _, endpointCount := range []int{1, 100, 1000} {
+	for _, endpointCount := range []int{1, 2, 100, 1000} {
 		b.Run(strconv.Itoa(endpointCount), func(b *testing.B) {
 			selector := mustBenchmarkWRR(b, endpointCount)
 			b.ReportAllocs()

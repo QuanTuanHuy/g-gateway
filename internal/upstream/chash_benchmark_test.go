@@ -20,7 +20,7 @@ func BenchmarkConsistentHashSelect(b *testing.B) {
 		hashes[index] = xxhash.Sum64(encoded[:])
 	}
 
-	for _, endpointCount := range []int{1, 100, 1000} {
+	for _, endpointCount := range []int{1, 10, 100, 1000} {
 		b.Run(strconv.Itoa(endpointCount), func(b *testing.B) {
 			endpoints := make([]weightedEndpoint, endpointCount)
 			for index := range endpoints {
