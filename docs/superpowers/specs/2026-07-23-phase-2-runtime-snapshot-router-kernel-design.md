@@ -1,7 +1,7 @@
 # Phase 2 — Runtime snapshot và router kernel
 
 - Ngày: 2026-07-23
-- Trạng thái: Thiết kế đã duyệt; chờ user review văn bản
+- Trạng thái: Implementation complete; canonical evidence pending
 - Parent roadmap: [Go-native API Gateway phase roadmap](2026-07-21-go-native-api-gateway-phase-roadmap-design.md)
 - North-star: [Go-native API Gateway design](2026-07-21-go-native-api-gateway-design.md)
 - Phase trước: [Phase 1 — Proxy baseline và benchmark harness](2026-07-22-phase-1-proxy-baseline-benchmark-design.md)
@@ -555,3 +555,30 @@ Phase 3 nhận các contracts đã khóa:
 - benchmark raw-result/report conventions.
 
 Phase 3 thay fixed upstream table bằng lifecycle-aware `UpstreamRuntimeRegistry`, thêm balancing, health checks và retries. Nó không được đưa mutable upstream state vào `RuntimeSnapshot` hoặc request route-matching path.
+
+## 25. Audit trạng thái ngày 2026-07-26
+
+Trạng thái chính thức của checkpoint hiện tại là `implementation complete; canonical evidence pending`.
+
+[Phase 2 current status](../../benchmarks/phase-2-current-status.md) là nguồn kết luận evidence có thẩm quyền. Quyết định hoãn được ghi trong [deferred-benchmark handoff design](2026-07-26-phase-2-deferred-benchmark-handoff-design.md).
+
+Delivery slices 1–6 đã được triển khai và kiểm tra trong các commit từ `d19b2e9` đến `27813bc`. Deterministic dataset, 100.000-route acceptance và router microbenchmarks của slice 7 đã được triển khai ở `181aae2`, nhưng toàn bộ isolated end-to-end benchmark/report của Task 16 được hoãn. Operational runbook và current-status document của slice 8 đã được hoàn thành ở checkpoint này.
+
+Evidence hiện có hỗ trợ các kết luận:
+
+- strict v1alpha1/v1alpha2 configuration, canonical validation và reference resolution hoạt động;
+- router precedence khớp reference/property oracle;
+- request giữ một snapshot nhất quán qua concurrent activation;
+- request-id và header-rewrite chạy trong proxy pipeline;
+- static router sentinel match đạt zero allocation trong microbenchmark;
+- provisional compile, heap và steady-state acceptance nằm trong các ngưỡng thiết kế.
+
+Các exit criteria sau chưa được chứng minh end-to-end:
+
+- Go 100.000-route throughput và p99 so với Go one-route baseline;
+- first/middle/last throughput và p99 spread;
+- zero unexpected errors trong Phase 2 end-to-end runs;
+- APISIX comparative throughput, p99, CPU và memory;
+- canonical five-repetition và dedicated Linux certification.
+
+Checkpoint này cho phép bắt đầu một vòng thiết kế Phase 3 riêng vì immutable snapshot/router/plugin contracts đã ổn định. Nó không tuyên bố Phase 2 đạt APISIX parity, không xóa performance debt, và không phải production certification.
