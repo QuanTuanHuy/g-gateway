@@ -184,7 +184,9 @@ func TestDecodeValidPhase1Config(t *testing.T) {
 	if got := resources.Routes[0].Match.Methods; len(got) != 2 || got[0] != "GET" || got[1] != "POST" {
 		t.Fatalf("methods = %v, want [GET POST]", got)
 	}
-	if len(resources.Upstreams) != 1 || resources.Upstreams[0].Endpoints[0] != "http://upstream:8080" {
+	if len(resources.Upstreams) != 1 ||
+		resources.Upstreams[0].Endpoints[0].URL != "http://upstream:8080" ||
+		resources.Upstreams[0].Endpoints[0].Weight != 1 {
 		t.Fatalf("upstreams = %+v", resources.Upstreams)
 	}
 	if resources.Upstreams[0].Transport.MaxIdleConnectionsPerHost != 1024 {

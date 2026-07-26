@@ -108,7 +108,7 @@ func TestBuilderRejectsInvalidResources(t *testing.T) {
 			r.Routes[0].Plugins[0].RawConfig = json.RawMessage(`{"unknown":true}`)
 		}, code: "PLUGIN_COMPILE_FAILED"},
 		{name: "immutable upstream change", mutate: func(r *model.ResourceSet) {
-			r.Upstreams[0].Endpoints[0] = "http://changed:8080"
+			r.Upstreams[0].Endpoints[0].URL = "http://changed:8080"
 		}, code: "UPSTREAM_SET_IMMUTABLE"},
 		{name: "duplicate normalized match", mutate: func(r *model.ResourceSet) {
 			duplicate := r.Routes[0]
@@ -184,7 +184,8 @@ func testResources() model.ResourceSet {
 		}},
 		Upstreams: []model.Upstream{{
 			ID:        "users-upstream",
-			Endpoints: []string{"http://upstream:8080"},
+			Endpoints: []model.Endpoint{{URL: "http://upstream:8080", Weight: 1}},
+			Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 			Transport: model.TransportConfig{
 				DialTimeout:               time.Second,
 				ResponseHeaderTimeout:     2 * time.Second,

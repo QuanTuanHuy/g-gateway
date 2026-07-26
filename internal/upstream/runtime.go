@@ -20,7 +20,7 @@ func New(resource model.Upstream) (*Runtime, error) {
 	if len(resource.Endpoints) != 1 {
 		return nil, fmt.Errorf("upstream %q: expected exactly one endpoint, got %d", resource.ID, len(resource.Endpoints))
 	}
-	target, err := url.Parse(resource.Endpoints[0])
+	target, err := url.Parse(resource.Endpoints[0].URL)
 	if err != nil {
 		return nil, fmt.Errorf("upstream %q endpoint: %w", resource.ID, err)
 	}

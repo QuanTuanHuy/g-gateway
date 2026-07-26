@@ -188,8 +188,18 @@ func runtimeProxyResources(firstEndpoint, secondEndpoint string) model.ResourceS
 			},
 		}},
 		Upstreams: []model.Upstream{
-			{ID: "upstream-a", Endpoints: []string{firstEndpoint}, Transport: transport},
-			{ID: "upstream-b", Endpoints: []string{secondEndpoint}, Transport: transport},
+			{
+				ID:        "upstream-a",
+				Endpoints: []model.Endpoint{{URL: firstEndpoint, Weight: 1}},
+				Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
+				Transport: transport,
+			},
+			{
+				ID:        "upstream-b",
+				Endpoints: []model.Endpoint{{URL: secondEndpoint, Weight: 1}},
+				Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
+				Transport: transport,
+			},
 		},
 	}
 }

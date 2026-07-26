@@ -84,9 +84,13 @@ func RenderGateway(
 		})
 	}
 	for _, upstream := range resources.Upstreams {
+		endpoints := make([]string, len(upstream.Endpoints))
+		for i, endpoint := range upstream.Endpoints {
+			endpoints[i] = endpoint.URL
+		}
 		document.Upstreams = append(document.Upstreams, gatewayUpstream{
 			ID:        upstream.ID,
-			Endpoints: append([]string(nil), upstream.Endpoints...),
+			Endpoints: endpoints,
 			Transport: gatewayTransport{
 				DialTimeout:               upstream.Transport.DialTimeout.String(),
 				ResponseHeaderTimeout:     upstream.Transport.ResponseHeaderTimeout.String(),
@@ -155,12 +159,12 @@ func RenderAPISIX(resources model.ResourceSet, metadata Metadata) ([]byte, error
 		nodes := make(map[string]int, len(upstream.Endpoints))
 		scheme := "http"
 		for _, endpoint := range upstream.Endpoints {
-			parsed, err := url.Parse(endpoint)
+			parsed, err := url.Parse(endpoint.URL)
 			if err != nil || parsed.Host == "" {
-				return nil, fmt.Errorf("upstream %q has invalid endpoint %q", upstream.ID, endpoint)
+				return nil, fmt.Errorf("upstream %q has invalid endpoint %q", upstream.ID, endpoint.URL)
 			}
 			scheme = parsed.Scheme
-			nodes[parsed.Host] = 1
+			nodes[parsed.Host] = int(endpoint.Weight)
 		}
 		document.Upstreams = append(document.Upstreams, apisixUpstream{
 			ID:     upstream.ID,

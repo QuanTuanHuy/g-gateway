@@ -187,7 +187,8 @@ func TestCloseIdleConnections(t *testing.T) {
 func testResource(endpoint string) model.Upstream {
 	return model.Upstream{
 		ID:        "baseline",
-		Endpoints: []string{endpoint},
+		Endpoints: []model.Endpoint{{URL: endpoint, Weight: 1}},
+		Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 		Transport: model.TransportConfig{
 			DialTimeout:               time.Second,
 			ResponseHeaderTimeout:     time.Second,

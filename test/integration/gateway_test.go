@@ -217,7 +217,8 @@ func startGateway(t *testing.T, endpoint, routePath string, maxBody int64, respo
 		Routes: []model.Route{{ID: "integration", Match: model.RouteMatch{Path: routePath, Methods: []string{http.MethodGet, http.MethodPost}}, UpstreamRef: "integration"}},
 		Upstreams: []model.Upstream{{
 			ID:        "integration",
-			Endpoints: []string{endpoint},
+			Endpoints: []model.Endpoint{{URL: endpoint, Weight: 1}},
+			Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 			Transport: model.TransportConfig{
 				DialTimeout:               time.Second,
 				ResponseHeaderTimeout:     responseTimeout,

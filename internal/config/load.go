@@ -147,9 +147,16 @@ func convert(wire document) (BootstrapConfig, model.ResourceSet, error) {
 		if err != nil {
 			return BootstrapConfig{}, model.ResourceSet{}, err
 		}
+		endpoints := make([]model.Endpoint, len(upstream.Endpoints))
+		for endpointIndex, rawURL := range upstream.Endpoints {
+			endpoints[endpointIndex] = model.Endpoint{URL: rawURL, Weight: 1}
+		}
 		resources.Upstreams = append(resources.Upstreams, model.Upstream{
 			ID:        upstream.ID,
-			Endpoints: append([]string(nil), upstream.Endpoints...),
+			Endpoints: endpoints,
+			Balancer: model.BalancerPolicy{
+				Type: model.BalancerWeightedRoundRobin,
+			},
 			Transport: model.TransportConfig{
 				DialTimeout:               dialTimeout,
 				ResponseHeaderTimeout:     responseHeaderTimeout,

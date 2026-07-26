@@ -447,7 +447,8 @@ func testResources(endpoint string) model.ResourceSet {
 		}},
 		Upstreams: []model.Upstream{{
 			ID:        "baseline",
-			Endpoints: []string{endpoint},
+			Endpoints: []model.Endpoint{{URL: endpoint, Weight: 1}},
+			Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 			Transport: model.TransportConfig{
 				DialTimeout:               time.Second,
 				ResponseHeaderTimeout:     time.Second,
@@ -464,7 +465,8 @@ func runtimeResources(endpointA, endpointB, target, marker string) model.Resourc
 	resources.Upstreams[0].ID = "upstream-a"
 	resources.Upstreams = append(resources.Upstreams, model.Upstream{
 		ID:        "upstream-b",
-		Endpoints: []string{endpointB},
+		Endpoints: []model.Endpoint{{URL: endpointB, Weight: 1}},
+		Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 		Transport: resources.Upstreams[0].Transport,
 	})
 	resources.Routes[0].UpstreamRef = target

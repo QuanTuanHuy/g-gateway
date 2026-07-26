@@ -39,7 +39,7 @@ func TestTableRejectsChangedUpstreamSet(t *testing.T) {
 	defer table.CloseIdleConnections()
 
 	changed := model.CloneResourceSet(model.ResourceSet{Upstreams: resources}).Upstreams
-	changed[0].Endpoints[0] = "http://two:8080"
+	changed[0].Endpoints[0].URL = "http://two:8080"
 	err = table.ValidateResources(changed)
 	if err == nil || !strings.Contains(err.Error(), "UPSTREAM_SET_IMMUTABLE") {
 		t.Fatalf("ValidateResources() error = %v", err)
@@ -102,7 +102,7 @@ func TestTableClosesConstructedRuntimesAfterPartialFailure(t *testing.T) {
 		if calls == 2 {
 			return nil, errors.New("construction failed")
 		}
-		target, err := url.Parse(resource.Endpoints[0])
+		target, err := url.Parse(resource.Endpoints[0].URL)
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +129,8 @@ func TestTableClosesConstructedRuntimesAfterPartialFailure(t *testing.T) {
 func testTableResource(id, endpoint string) model.Upstream {
 	return model.Upstream{
 		ID:        id,
-		Endpoints: []string{endpoint},
+		Endpoints: []model.Endpoint{{URL: endpoint, Weight: 1}},
+		Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 		Transport: model.TransportConfig{
 			DialTimeout:               time.Second,
 			ResponseHeaderTimeout:     2 * time.Second,

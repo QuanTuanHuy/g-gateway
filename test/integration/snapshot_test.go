@@ -229,8 +229,18 @@ func snapshotResources(endpointA, endpointB, target, marker string) model.Resour
 			}},
 		}},
 		Upstreams: []model.Upstream{
-			{ID: "upstream-a", Endpoints: []string{endpointA}, Transport: transport},
-			{ID: "upstream-b", Endpoints: []string{endpointB}, Transport: transport},
+			{
+				ID:        "upstream-a",
+				Endpoints: []model.Endpoint{{URL: endpointA, Weight: 1}},
+				Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
+				Transport: transport,
+			},
+			{
+				ID:        "upstream-b",
+				Endpoints: []model.Endpoint{{URL: endpointB, Weight: 1}},
+				Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
+				Transport: transport,
+			},
 		},
 	}
 }

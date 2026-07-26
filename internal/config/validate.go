@@ -344,7 +344,10 @@ func validateUpstream(upstream *model.Upstream, index int) error {
 	if len(upstream.Endpoints) != 1 {
 		return fmt.Errorf("upstreams[%d].endpoints: Phase 1 requires exactly one endpoint", index)
 	}
-	endpoint, err := url.Parse(upstream.Endpoints[0])
+	if upstream.Endpoints[0].Weight != 1 {
+		return fmt.Errorf("upstreams[%d].endpoints[0].weight: legacy configuration requires weight 1", index)
+	}
+	endpoint, err := url.Parse(upstream.Endpoints[0].URL)
 	if err != nil {
 		return fmt.Errorf("upstreams[%d].endpoints[0]: %w", index, err)
 	}

@@ -381,7 +381,8 @@ func testHandlerResources(endpoint string, methods []string) model.ResourceSet {
 		}},
 		Upstreams: []model.Upstream{{
 			ID:        "baseline",
-			Endpoints: []string{endpoint},
+			Endpoints: []model.Endpoint{{URL: endpoint, Weight: 1}},
+			Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 			Transport: model.TransportConfig{
 				DialTimeout:               time.Second,
 				ResponseHeaderTimeout:     25 * time.Millisecond,
