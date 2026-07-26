@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
@@ -24,7 +23,7 @@ type CompiledRoute struct {
 	meta         *requestctx.RouteMeta
 	service      *requestctx.ServiceMeta
 	upstreamMeta *requestctx.UpstreamMeta
-	upstream     *upstream.Runtime
+	plan         *upstream.Plan
 	plugins      *plugin.Chain
 }
 
@@ -32,6 +31,7 @@ type Snapshot struct {
 	revision uint64
 	router   *router.Router
 	routes   []CompiledRoute
+	plans    *upstream.PlanSet
 	stats    Stats
 }
 
@@ -91,10 +91,6 @@ func (r *CompiledRoute) RunResponse(state *requestctx.Context, response *http.Re
 	return r.plugins.RunResponse(state, response)
 }
 
-func (r *CompiledRoute) Target() *url.URL {
-	return r.upstream.Target()
-}
-
-func (r *CompiledRoute) RoundTrip(request *http.Request) (*http.Response, error) {
-	return r.upstream.RoundTripper().RoundTrip(request)
+func (r *CompiledRoute) Select(request *http.Request) (upstream.Selection, error) {
+	return r.plan.Select(request)
 }

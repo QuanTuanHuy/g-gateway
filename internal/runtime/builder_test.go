@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,17 +18,17 @@ import (
 
 func TestBuilderResolvesServiceAndCompilesRoute(t *testing.T) {
 	resources := testResources()
-	upstreams := mustUpstreamTable(t, resources.Upstreams)
 	registry, err := plugin.NewBuiltinRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := NewBuilder(upstreams, registry)
+	builder, err := NewBuilder(registry)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	snapshot, err := builder.Build(7, resources)
+	candidate := mustCandidate(t, resources.Upstreams)
+	snapshot, err := builder.Build(7, resources, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +68,9 @@ func TestBuilderRouteDisableRemovesInheritedPlugin(t *testing.T) {
 	resources := testResources()
 	resources.Routes[0].Plugins = []model.PluginAttachment{{Name: "header-rewrite", Enabled: false}}
 	builder := mustBuilder(t, resources.Upstreams)
+	candidate := mustCandidate(t, resources.Upstreams)
 
-	snapshot, err := builder.Build(1, resources)
+	snapshot, err := builder.Build(1, resources, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,8 +122,9 @@ func TestBuilderRejectsInvalidResources(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			resources := model.CloneResourceSet(base)
 			builder := mustBuilder(t, resources.Upstreams)
+			candidate := mustCandidate(t, resources.Upstreams)
 			tt.mutate(&resources)
-			_, err := builder.Build(1, resources)
+			_, err := builder.Build(1, resources, candidate)
 			var buildErr *BuildError
 			if !errors.As(err, &buildErr) || buildErr.Code != tt.code {
 				t.Fatalf("Build() error = %#v, want code %q", err, tt.code)
@@ -133,7 +136,8 @@ func TestBuilderRejectsInvalidResources(t *testing.T) {
 func TestBuilderRejectsRevisionZero(t *testing.T) {
 	resources := testResources()
 	builder := mustBuilder(t, resources.Upstreams)
-	_, err := builder.Build(0, resources)
+	candidate := mustCandidate(t, resources.Upstreams)
+	_, err := builder.Build(0, resources, candidate)
 	var buildErr *BuildError
 	if !errors.As(err, &buildErr) || buildErr.Code != "REVISION_INVALID" {
 		t.Fatalf("Build() error = %#v", err)
@@ -194,14 +198,25 @@ func testResources() model.ResourceSet {
 	}
 }
 
-func mustUpstreamTable(t *testing.T, resources []model.Upstream) *upstream.Table {
+func mustCandidate(t *testing.T, resources []model.Upstream) *upstream.Candidate {
 	t.Helper()
-	table, err := upstream.NewTable(resources)
+	registry, err := upstream.NewRegistry(64, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(table.CloseIdleConnections)
-	return table
+	candidate, err := registry.Prepare(resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		candidate.Rollback()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := registry.Close(ctx); err != nil {
+			t.Errorf("Registry.Close() error = %v", err)
+		}
+	})
+	return candidate
 }
 
 func mustBuilder(t *testing.T, upstreams []model.Upstream) *Builder {
@@ -210,7 +225,7 @@ func mustBuilder(t *testing.T, upstreams []model.Upstream) *Builder {
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := NewBuilder(mustUpstreamTable(t, upstreams), registry)
+	builder, err := NewBuilder(registry)
 	if err != nil {
 		t.Fatal(err)
 	}

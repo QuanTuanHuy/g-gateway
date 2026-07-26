@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -33,20 +34,26 @@ func TestPhase2Acceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	table, err := upstream.NewTable(resources.Upstreams)
+	upstreamRegistry, err := upstream.NewRegistry(64, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer table.CloseIdleConnections()
-	registry, err := plugin.NewBuiltinRegistry()
+	pluginRegistry, err := plugin.NewBuiltinRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := NewBuilder(table, registry)
+	builder, err := NewBuilder(pluginRegistry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(builder, nil)
+	manager := NewManager(builder, upstreamRegistry, nil)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Errorf("Manager.Close() error = %v", err)
+		}
+	}()
 
 	goruntime.GC()
 	var baseline goruntime.MemStats

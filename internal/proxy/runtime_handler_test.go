@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -123,22 +124,21 @@ func newRuntimeTestHandler(
 	t *testing.T,
 	resources model.ResourceSet,
 	apply bool,
-) (http.Handler, *runtime.Manager, *upstream.Table) {
+) (http.Handler, *runtime.Manager, *upstream.Registry) {
 	t.Helper()
-	table, err := upstream.NewTable(resources.Upstreams)
+	upstreamRegistry, err := upstream.NewRegistry(64, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(table.CloseIdleConnections)
-	registry, err := plugin.NewBuiltinRegistry()
+	pluginRegistry, err := plugin.NewBuiltinRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := runtime.NewBuilder(table, registry)
+	builder, err := runtime.NewBuilder(pluginRegistry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := runtime.NewManager(builder, nil)
+	manager := runtime.NewManager(builder, upstreamRegistry, nil)
 	if apply {
 		if err := manager.Apply(1, resources); err != nil {
 			t.Fatal(err)
@@ -152,7 +152,14 @@ func newRuntimeTestHandler(
 	if err != nil {
 		t.Fatal(err)
 	}
-	return requestctx.Middleware(handler), manager, table
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Errorf("Manager.Close() error = %v", err)
+		}
+	})
+	return requestctx.Middleware(handler), manager, upstreamRegistry
 }
 
 func runtimeProxyResources(firstEndpoint, secondEndpoint string) model.ResourceSet {

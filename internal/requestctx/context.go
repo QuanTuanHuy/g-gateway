@@ -3,7 +3,8 @@ package requestctx
 import (
 	"context"
 	"net/http"
-	"net/url"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
 type RouteMeta struct {
@@ -29,8 +30,7 @@ type SnapshotRef interface {
 }
 
 type RuntimeRoute interface {
-	Target() *url.URL
-	RoundTrip(*http.Request) (*http.Response, error)
+	Select(*http.Request) (upstream.Selection, error)
 	RunResponse(*Context, *http.Response) error
 }
 
@@ -41,6 +41,8 @@ type Context struct {
 	Route         *RouteMeta
 	Service       *ServiceMeta
 	Upstream      *UpstreamMeta
+	Selection     upstream.Selection
+	Attempt       int
 	RequestID     string
 	Path          string
 	Params        []ParamSpan

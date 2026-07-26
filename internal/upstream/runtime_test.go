@@ -15,15 +15,13 @@ import (
 )
 
 func TestNewBuildsHTTP1OnlyTransport(t *testing.T) {
-	runtime, err := New(testResource("http://upstream:8080"))
+	runtime := newTransportRuntime(testResource("http://upstream:8080").Transport)
+	endpoint, err := newEndpointRuntime("baseline", testResource("http://upstream:8080").Endpoints[0])
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	transport, ok := runtime.RoundTripper().(*http.Transport)
-	if !ok {
-		t.Fatalf("RoundTripper() type = %T, want *http.Transport", runtime.RoundTripper())
-	}
+	transport := runtime.transport
 	if transport.Protocols == nil || !transport.Protocols.HTTP1() || transport.Protocols.HTTP2() {
 		t.Fatalf("Protocols = %+v, want HTTP/1 only", transport.Protocols)
 	}
@@ -31,13 +29,8 @@ func TestNewBuildsHTTP1OnlyTransport(t *testing.T) {
 		t.Fatal("ForceAttemptHTTP2 = true, want false")
 	}
 
-	target := runtime.Target()
-	if target.String() != "http://upstream:8080" {
-		t.Fatalf("Target() = %q", target)
-	}
-	target.Host = "mutated:9999"
-	if runtime.Target().Host != "upstream:8080" {
-		t.Fatalf("Target() exposed mutable state: %q", runtime.Target())
+	if endpoint.target.String() != "http://upstream:8080" {
+		t.Fatalf("target = %q", endpoint.target)
 	}
 }
 
@@ -54,14 +47,11 @@ func TestRuntimeReusesConnections(t *testing.T) {
 	server.Start()
 	defer server.Close()
 
-	runtime, err := New(testResource(server.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTransportRuntime(testResource(server.URL).Transport)
 	defer runtime.CloseIdleConnections()
 
 	for range 2 {
-		response, err := runtime.RoundTripper().RoundTrip(mustRequest(t, context.Background(), server.URL))
+		response, err := runtime.RoundTrip(mustRequest(t, context.Background(), server.URL))
 		if err != nil {
 			t.Fatalf("RoundTrip() error = %v", err)
 		}
@@ -87,13 +77,10 @@ func TestRuntimeHonorsResponseHeaderTimeout(t *testing.T) {
 
 	resource := testResource(server.URL)
 	resource.Transport.ResponseHeaderTimeout = 30 * time.Millisecond
-	runtime, err := New(resource)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTransportRuntime(resource.Transport)
 	defer runtime.CloseIdleConnections()
 
-	_, err = runtime.RoundTripper().RoundTrip(mustRequest(t, context.Background(), server.URL))
+	_, err := runtime.RoundTrip(mustRequest(t, context.Background(), server.URL))
 	if err == nil {
 		t.Fatal("RoundTrip() error = nil, want response-header timeout")
 	}
@@ -113,17 +100,14 @@ func TestRoundTripUsesRequestCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runtime, err := New(testResource(server.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := newTransportRuntime(testResource(server.URL).Transport)
 	defer runtime.CloseIdleConnections()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	request := mustRequest(t, ctx, server.URL)
 	result := make(chan error, 1)
 	go func() {
-		_, err := runtime.RoundTripper().RoundTrip(request)
+		_, err := runtime.RoundTrip(request)
 		result <- err
 	}()
 
@@ -165,11 +149,8 @@ func TestCloseIdleConnections(t *testing.T) {
 	server.Start()
 	defer server.Close()
 
-	runtime, err := New(testResource(server.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := runtime.RoundTripper().RoundTrip(mustRequest(t, context.Background(), server.URL))
+	runtime := newTransportRuntime(testResource(server.URL).Transport)
+	response, err := runtime.RoundTrip(mustRequest(t, context.Background(), server.URL))
 	if err != nil {
 		t.Fatal(err)
 	}

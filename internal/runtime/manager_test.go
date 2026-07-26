@@ -1,18 +1,165 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
+	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
+	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
+
+func TestManagerCandidatePrepareFailureKeepsActiveSnapshotAndRegistry(t *testing.T) {
+	resources := testResources()
+	manager := newRegistryManager(t)
+	if err := manager.Apply(1, resources); err != nil {
+		t.Fatal(err)
+	}
+	before := manager.UpstreamStats()
+	invalid := model.CloneResourceSet(resources)
+	invalid.Upstreams[0].Endpoints[0].Weight = 0
+
+	if err := manager.Apply(2, invalid); err == nil {
+		t.Fatal("Apply() error = nil")
+	}
+	if manager.Load().Revision() != 1 {
+		t.Fatalf("active revision = %d, want 1", manager.Load().Revision())
+	}
+	if after := manager.UpstreamStats(); after != before {
+		t.Fatalf("registry stats = %+v, want %+v", after, before)
+	}
+}
+
+func TestManagerCandidateRollsBackWhenPluginBuildFails(t *testing.T) {
+	resources := testResources()
+	manager := newRegistryManager(t)
+	if err := manager.Apply(1, resources); err != nil {
+		t.Fatal(err)
+	}
+	before := manager.UpstreamStats()
+	invalid := model.CloneResourceSet(resources)
+	invalid.Routes[0].Plugins = []model.PluginAttachment{{Name: "unknown", Enabled: true}}
+
+	assertBuildError(t, manager.Apply(2, invalid), "PLUGIN_COMPILE_FAILED")
+	if after := manager.UpstreamStats(); after != before {
+		t.Fatalf("registry stats after rollback = %+v, want %+v", after, before)
+	}
+}
+
+func TestManagerAcquirePublishesNewSetAndRetiresOldSet(t *testing.T) {
+	resources := testResources()
+	manager := newRegistryManager(t)
+	if err := manager.Apply(1, resources); err != nil {
+		t.Fatal(err)
+	}
+	oldLease, ok := manager.Acquire()
+	if !ok {
+		t.Fatal("Acquire() rejected active snapshot")
+	}
+
+	changed := model.CloneResourceSet(resources)
+	changed.Upstreams[0].Endpoints[0].Weight = 2
+	if err := manager.Apply(2, changed); err != nil {
+		t.Fatal(err)
+	}
+	current, ok := manager.Acquire()
+	if !ok {
+		t.Fatal("Acquire() rejected new active snapshot")
+	}
+	if current.Snapshot().Revision() != 2 {
+		t.Fatalf("acquired revision = %d, want 2", current.Snapshot().Revision())
+	}
+	current.Release()
+	if stats := manager.UpstreamStats(); stats.ActivePlanSets != 1 || stats.RetiredPlanSets != 1 {
+		t.Fatalf("registry stats with old lease = %+v", stats)
+	}
+	oldLease.Release()
+	waitForRetiredPlanSets(t, manager, 0)
+}
+
+func TestManagerCloseWaitsForLeaseRelease(t *testing.T) {
+	manager := newRegistryManager(t)
+	if err := manager.Apply(1, testResources()); err != nil {
+		t.Fatal(err)
+	}
+	lease, ok := manager.Acquire()
+	if !ok {
+		t.Fatal("Acquire() rejected active snapshot")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.Close(ctx)
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("Close() returned before lease release: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	lease.Release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.Acquire(); ok {
+		t.Fatal("Acquire() succeeded after Close")
+	}
+}
+
+func newRegistryManager(t *testing.T) *Manager {
+	t.Helper()
+	return newRegistryManagerWithObserver(t, nil)
+}
+
+func newRegistryManagerWithObserver(t *testing.T, observer Observer) *Manager {
+	t.Helper()
+	plugins, err := plugin.NewBuiltinRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := NewBuilder(plugins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newManagerForBuilder(t, builder, observer)
+}
+
+func newManagerForBuilder(t *testing.T, builder *Builder, observer Observer) *Manager {
+	t.Helper()
+	registry, err := upstream.NewRegistry(64, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(builder, registry, observer)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Errorf("Manager.Close() error = %v", err)
+		}
+	})
+	return manager
+}
+
+func waitForRetiredPlanSets(t *testing.T, manager *Manager, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if manager.UpstreamStats().RetiredPlanSets == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("retired plan sets = %d, want %d", manager.UpstreamStats().RetiredPlanSets, want)
+}
 
 func TestManagerActivationKeepsLastKnownGood(t *testing.T) {
 	resources := testResources()
 	observer := &recordingObserver{}
-	manager := NewManager(mustBuilder(t, resources.Upstreams), observer)
+	manager := newRegistryManagerWithObserver(t, observer)
 	if manager.Load() != nil {
 		t.Fatal("Load() returned a snapshot before Apply")
 	}
@@ -48,7 +195,7 @@ func TestManagerActivationKeepsLastKnownGood(t *testing.T) {
 
 func TestManagerConcurrentApplyActivatesHighestRevision(t *testing.T) {
 	resources := testResources()
-	manager := NewManager(mustBuilder(t, resources.Upstreams), nil)
+	manager := newRegistryManager(t)
 	if err := manager.Apply(1, resources); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +222,7 @@ func TestManagerConcurrentApplyActivatesHighestRevision(t *testing.T) {
 func TestManagerSerializesSlowLowerRevisionBeforeHigherRevision(t *testing.T) {
 	resources := testResources()
 	builder := mustBuilder(t, resources.Upstreams)
-	manager := NewManager(builder, nil)
+	manager := newManagerForBuilder(t, builder, nil)
 	if err := manager.Apply(1, resources); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +260,7 @@ func TestManagerNotifiesAppliedSnapshotsInPublicationOrder(t *testing.T) {
 		revision2Entered: make(chan struct{}),
 		releaseRevision2: make(chan struct{}),
 	}
-	manager := NewManager(mustBuilder(t, resources.Upstreams), observer)
+	manager := newRegistryManagerWithObserver(t, observer)
 	if err := manager.Apply(1, resources); err != nil {
 		t.Fatal(err)
 	}
