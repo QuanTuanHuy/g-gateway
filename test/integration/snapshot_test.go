@@ -180,6 +180,9 @@ func startSnapshotGateway(t *testing.T, resources model.ResourceSet) (*gateway.G
 			PrivateKeyFile:  keyFile,
 		},
 		Admin: config.ListenerConfig{Address: "127.0.0.1:0"},
+		Runtime: config.RuntimeConfig{
+			MaxRetiredSnapshots: 1024,
+		},
 		Server: config.ServerConfig{
 			ReadHeaderTimeout:   time.Second,
 			IdleTimeout:         time.Minute,

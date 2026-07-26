@@ -157,12 +157,88 @@ func TestApplyPublishesNewRouteAndKeepsLastGoodSnapshot(t *testing.T) {
 	if err := gateway.Apply(2, revision1); err == nil || !strings.Contains(err.Error(), "STALE_REVISION") {
 		t.Fatalf("stale Apply error = %v, want STALE_REVISION", err)
 	}
+	beforeRejected := gateway.manager.UpstreamStats()
 	invalid := runtimeResources(upstreamA.URL, upstreamB.URL, "missing", "3")
 	if err := gateway.Apply(3, invalid); err == nil {
 		t.Fatal("invalid Apply error = nil")
 	}
+	if afterRejected := gateway.manager.UpstreamStats(); afterRejected != beforeRejected {
+		t.Fatalf("registry stats after rejected apply = %+v, want %+v", afterRejected, beforeRejected)
+	}
 	assertGatewayRevision(t, target, "B", "2")
 	assertHTTPStatus(t, "http://"+loopbackAddress(t, addresses.Admin)+"/readyz", http.StatusOK, nil)
+}
+
+func TestApplyRetiresOldPlanSetAfterInFlightRequestReleasesLease(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_, _ = io.WriteString(response, "A")
+	}))
+	t.Cleanup(upstreamA.Close)
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, "B")
+	}))
+	t.Cleanup(upstreamB.Close)
+	certFile, keyFile := writeCertificatePair(t)
+	gateway, err := New(
+		testBootstrap(certFile, keyFile),
+		runtimeResources(upstreamA.URL, upstreamB.URL, "upstream-a", "1"),
+		testLogger(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses, err := gateway.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := gateway.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
+
+	requestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := http.Get("http://" + loopbackAddress(t, addresses.HTTP) + "/hello")
+		if requestErr == nil {
+			_, requestErr = io.Copy(io.Discard, response.Body)
+			closeErr := response.Body.Close()
+			if requestErr == nil {
+				requestErr = closeErr
+			}
+		}
+		requestDone <- requestErr
+	}()
+	waitSignal(t, started, "revision 1 request")
+
+	if err := gateway.Apply(
+		2,
+		runtimeResources(upstreamA.URL, upstreamB.URL, "upstream-b", "2"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if stats := gateway.manager.UpstreamStats(); stats.ActivePlanSets != 1 || stats.RetiredPlanSets != 1 {
+		t.Fatalf("stats with held request = %+v, want one active and one retired plan set", stats)
+	}
+
+	close(release)
+	if err := <-requestDone; err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if gateway.manager.UpstreamStats().RetiredPlanSets == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("retired plan sets = %d, want 0", gateway.manager.UpstreamStats().RetiredPlanSets)
 }
 
 func TestApplyRejectsUpdatesAfterShutdownBegins(t *testing.T) {

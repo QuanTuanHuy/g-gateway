@@ -81,6 +81,30 @@ func TestRegistryTransportOnlyChangeReusesEndpoints(t *testing.T) {
 	}
 }
 
+func TestRegistryUnrelatedUpstreamChangePreservesTransportIdentity(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	upstreamA := testUpstream("upstream-a", testEndpoint("http://a.example:8080", 1))
+	upstreamB := testUpstream("upstream-b", testEndpoint("http://b.example:8080", 1))
+	firstCandidate := mustPrepare(t, registry, []model.Upstream{upstreamA, upstreamB})
+	firstSet := firstCandidate.Commit()
+	defer firstSet.Retire()
+	firstB, _ := firstSet.Plan("upstream-b")
+
+	changedA := upstreamA
+	changedA.Endpoints = append(changedA.Endpoints, testEndpoint("http://a-canary.example:8080", 1))
+	changedA.Transport.ResponseHeaderTimeout += time.Second
+	secondCandidate := mustPrepare(t, registry, []model.Upstream{changedA, upstreamB})
+	defer secondCandidate.Rollback()
+	secondB, _ := secondCandidate.Plan("upstream-b")
+
+	if firstB.transport != secondB.transport {
+		t.Fatal("unrelated upstream change replaced upstream B transport runtime")
+	}
+	if firstB.endpoints[0].runtime != secondB.endpoints[0].runtime {
+		t.Fatal("unrelated upstream change replaced upstream B endpoint runtime")
+	}
+}
+
 func TestRegistryOwnsDisabledEndpointAndReusesItWhenEnabled(t *testing.T) {
 	registry := mustRegistry(t, 64, nil)
 	resource := testUpstream("users",
