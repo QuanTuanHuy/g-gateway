@@ -10,7 +10,7 @@
 
 Phase 3A implementation is complete through strict v1alpha3 configuration, transactional upstream reconcile, registry-backed immutable plans, shared transports, WRR, consistent hash, request leases, reaper cleanup, dynamic integration tests, bounded telemetry, normal acceptance, and selector/lease/reconcile benchmarks.
 
-This checkpoint is not `Phase 3A accepted`. The opt-in 10,000-upstream/100,000-endpoint resource profile, a CGO-capable race run, five-minute fuzzing, reference-Linux absolute gates, and APISIX end-to-end comparison have not been completed. No omitted command is reported as passed.
+This checkpoint is not `Phase 3A accepted`. The opt-in 10,000-upstream/100,000-endpoint resource profile passes on the Windows development machine, but a CGO-capable race run, five-minute fuzzing, reference-Linux absolute gates, and APISIX end-to-end comparison have not been completed. No omitted command is reported as passed.
 
 ## Correctness evidence
 
@@ -25,11 +25,13 @@ This checkpoint is not `Phase 3A accepted`. The opt-in 10,000-upstream/100,000-e
 | Bounded metric labels and lifecycle logs | Passed | telemetry and lifecycle observer tests |
 | Normal Phase 2 and Phase 3A acceptance | Passed | acceptance command below |
 | Full repository test suite | Passed | `go test -p 1 ./... -count=1` |
+| Shutdown/reaper/reconcile repetition | Passed | focused lifecycle suite, `-count=20` |
 | Formatting check at implementation checkpoints | Passed | `gofmt -l .` returned no files |
 | Static analysis | Passed | `go vet ./...` |
 | Command builds | Passed | `go build ./cmd/...` |
 | Local Markdown targets | Passed | six-document relative-link audit; zero missing targets |
 | Race detector | Pending | Windows host has `CGO_ENABLED=0`; `-race` stops before tests |
+| 30-second upstream fuzz smoke | Passed | both targets; approximately 3.28M and 3.59M executions |
 | Five-minute upstream fuzz targets | Pending | not run |
 
 The full suite was rerun after the lease hot-path optimization and Phase 3A acceptance scaffolding. It passed all packages, including `test/integration`.
@@ -61,19 +63,23 @@ These are developer-machine results, not reference-Linux certification.
 
 ## Allocation and relative-scale evidence
 
-The planned benchmark command was observed with `-benchmem -count=3`.
+The final planned benchmark command was observed with `-benchmem -count=5`.
 
 | Benchmark | Observed range | Allocations |
 |---|---:|---:|
-| Snapshot acquire/release | `19.69–20.29 ns/op` | `0 B/op`, `0 allocs/op` |
-| WRR / 2 endpoints | `10.42–11.27 ns/op` | `0 B/op`, `0 allocs/op` |
-| WRR / 1,000 endpoints | `10.14–11.17 ns/op` | `0 B/op`, `0 allocs/op` |
-| Consistent hash / 10 endpoints | `33.27–34.73 ns/op` | `0 B/op`, `0 allocs/op` |
-| Consistent hash / 1,000 endpoints | `79.18–86.28 ns/op` | `0 B/op`, `0 allocs/op` |
-| Registry full reconcile | `76.5–83.3 ms/op` | approximately `32.5 MB/op`, `198.6k allocs/op` |
-| Registry weight-only reconcile | `70.8–73.5 ms/op` | approximately `27.9 MB/op`, `148.6k allocs/op` |
+| Snapshot acquire/release | `19.32–23.45 ns/op`; median `19.75` | `0 B/op`, `0 allocs/op` |
+| WRR / 2 endpoints | `10.17–10.77 ns/op`; median `10.40` | `0 B/op`, `0 allocs/op` |
+| WRR / 1,000 endpoints | `10.45–11.23 ns/op`; median `11.00` | `0 B/op`, `0 allocs/op` |
+| Consistent hash / 10 endpoints | `31.87–42.85 ns/op`; median `40.20` | `0 B/op`, `0 allocs/op` |
+| Consistent hash / 1,000 endpoints | `69.52–82.60 ns/op`; median `72.05` | `0 B/op`, `0 allocs/op` |
+| Registry full reconcile | `77.1–93.5 ms/op`; median `82.08` | approximately `32.5 MB/op`, `198.6k allocs/op` |
+| Registry weight-only reconcile | `78.9–82.7 ms/op`; median `79.67` | approximately `27.9 MB/op`, `148.6k allocs/op` |
 
-Using the three-run medians, WRR/1,000 is about `97.6%` of WRR/2 and consistent-hash/1,000 is about `237.9%` of consistent-hash/10. Both development relative-scale gates pass. Reconcile allocation counts are recorded for visibility; Phase 3A does not define a zero-allocation reconcile gate.
+Using the five-run medians, WRR/1,000 is about `105.8%` of WRR/2 and consistent-hash/1,000 is about `179.2%` of consistent-hash/10. Both development relative-scale gates pass.
+
+For the explicitly requested 1/100/1,000 series, WRR medians are `0.5209 / 11.14 / 11.00 ns/op`; WRR/100 and WRR/1,000 are about `2,138.5%` and `2,111.7%` of the one-endpoint direct fast path, while WRR/1,000 is `98.7%` of WRR/100. Consistent-hash medians are `1.237 / 52.57 / 72.05 ns/op`; hash/100 and hash/1,000 are about `4,249.8%` and `5,824.6%` of the direct fast path, while hash/1,000 is `137.1%` of hash/100. The design gates intentionally use WRR/2 and hash/10 because the single-endpoint cases bypass schedule/continuum lookup.
+
+Reconcile allocation counts are recorded for visibility; Phase 3A does not define a zero-allocation reconcile gate.
 
 ## Full-envelope resource evidence
 
@@ -86,14 +92,21 @@ The deterministic full profile is implemented:
 - 20 weight-only swaps;
 - build, one-plan-set heap, retained heap, budget, reuse, and reaper assertions.
 
-`GATEWAY_PHASE3A_ACCEPTANCE=1` was not run at this checkpoint. Therefore these gates remain pending:
+Observed Windows development result:
 
-1. full build completes within five seconds;
-2. one active plan-set uses at most 512 MiB incremental heap;
-3. retained heap after 20 swaps is at most 125% of one active plan-set;
-4. the full profile remains within snapshot WRR/hash budgets on the reference environment.
+| Metric | Result |
+|---|---:|
+| Seed | `20260726` |
+| Canonical JSON checksum | `f39765a94d0debbefd78e436cc68aa757670b48485424d85d653a183611b0536` |
+| Upstreams / endpoints | `10,000 / 100,000` |
+| Weight-only swaps | `20` |
+| Initial build | `763.2531 ms` |
+| One active plan-set incremental heap | `85,994,248 bytes` |
+| Retained heap after swaps and boundary GC | `83,929,720 bytes` |
+| Retained / one-plan-set heap | approximately `97.6%` |
+| Budget, reuse, and reaper assertions | Passed |
 
-The stricter status `Phase 3A accepted` is not permitted until those absolute gates pass on the defined reference Linux environment.
+All full-envelope thresholds pass provisionally on this host. The stricter status `Phase 3A accepted` is not permitted until the same absolute gates and race verification pass on the defined reference Linux environment.
 
 ## Race and fuzz status
 
@@ -103,9 +116,14 @@ The Windows development host reports `CGO_ENABLED=0` and has no C compiler confi
 go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
 ```
 
-This is recorded as unavailable, not passed. Run the pinned Linux container command in the [Phase 3A runbook](../operations/phase-3a-runbook.md#extended-verification).
+This exact command was rerun at the final checkpoint and is recorded as unavailable, not passed. Run the pinned Linux container command in the [Phase 3A runbook](../operations/phase-3a-runbook.md#extended-verification).
 
-The two five-minute upstream fuzz targets are also pending.
+Both 30-second fuzz smoke runs passed:
+
+- `FuzzNormalizeEndpoint`: approximately 3.28 million executions;
+- `FuzzHashKey`: approximately 3.59 million executions.
+
+The two five-minute extended fuzz runs remain pending.
 
 ## Deferred APISIX E2E
 
