@@ -15,6 +15,7 @@ import (
 const (
 	apiVersionV1Alpha1 = "gateway/v1alpha1"
 	apiVersionV1Alpha2 = "gateway/v1alpha2"
+	apiVersionV1Alpha3 = "gateway/v1alpha3"
 )
 
 func validateV1(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
@@ -63,6 +64,43 @@ func validateV2(version string, bootstrap *BootstrapConfig, resources *model.Res
 			return err
 		}
 	}
+	for i := range resources.Services {
+		if err := validateService(&resources.Services[i], i, resources.Upstreams); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Routes {
+		if err := validateRouteV2(&resources.Routes[i], i, resources.Services, resources.Upstreams); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateV3(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha3 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha3)
+	}
+	if err := validateBootstrap(*bootstrap); err != nil {
+		return err
+	}
+	if got := bootstrap.Runtime.MaxRetiredSnapshots; got < 1 || got > 1024 {
+		return fmt.Errorf("runtime.max_retired_snapshots: must be between 1 and 1024")
+	}
+	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if len(resources.Routes) == 0 {
+		return fmt.Errorf("routes: must contain at least one route")
+	}
+	if len(resources.Upstreams) == 0 {
+		return fmt.Errorf("upstreams: must contain at least one upstream")
+	}
+	normalized, err := upstreamkernel.Normalize(resources.Upstreams)
+	if err != nil {
+		return err
+	}
+	resources.Upstreams = normalized
 	for i := range resources.Services {
 		if err := validateService(&resources.Services[i], i, resources.Upstreams); err != nil {
 			return err

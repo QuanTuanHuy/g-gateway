@@ -2,12 +2,19 @@ package config
 
 import "time"
 
+const DefaultMaxRetiredSnapshots = 64
+
 type BootstrapConfig struct {
 	HTTP      ListenerConfig
 	HTTPS     TLSListenerConfig
 	Admin     ListenerConfig
 	Server    ServerConfig
 	Telemetry TelemetryConfig
+	Runtime   RuntimeConfig
+}
+
+type RuntimeConfig struct {
+	MaxRetiredSnapshots int
 }
 
 type ListenerConfig struct {

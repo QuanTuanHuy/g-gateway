@@ -1,0 +1,86 @@
+api_version: gateway/v1alpha3
+
+runtime:
+  max_retired_snapshots: 64
+
+listeners:
+  http:
+    address: ":8080"
+  https:
+    address: ":8443"
+    certificate_file: /certs/server.crt
+    private_key_file: /certs/server.key
+  admin:
+    address: ":9090"
+
+server:
+  read_header_timeout: 5s
+  idle_timeout: 60s
+  shutdown_timeout: 30s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 67108864
+
+telemetry:
+  request_metrics_enabled: true
+  profiling_enabled: false
+
+routes:
+  - id: direct-health
+    priority: 100
+    match:
+      hosts: [api.example.com]
+      path: /health
+      methods: [GET]
+    upstream_ref: baseline
+    plugins:
+      - name: request-id
+        enabled: true
+        config:
+          header_name: X-Request-ID
+  - id: users
+    priority: 50
+    match:
+      hosts: ["*.example.com"]
+      path: /users/{id}
+      methods: [GET, PUT]
+      headers:
+        - name: X-Tenant
+          operator: exists
+    service_ref: users-service
+    plugins:
+      - name: header-rewrite
+        enabled: true
+        config:
+          request:
+            set:
+              X-Route: users
+          response:
+            set:
+              X-Gateway: g-gateway
+
+services:
+  - id: users-service
+    upstream_ref: baseline
+    plugins:
+      - name: header-rewrite
+        enabled: true
+        config:
+          request:
+            set:
+              X-Service: users
+
+upstreams:
+  - id: baseline
+    endpoints:
+      - url: http://upstream-a:8080
+        weight: 5
+      - url: http://upstream-b:8080
+        weight: 2
+    balancer:
+      type: weighted_round_robin
+    transport:
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 1024
+      max_idle_connections_per_host: 1024
