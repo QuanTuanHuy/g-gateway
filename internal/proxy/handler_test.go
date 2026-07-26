@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +22,135 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/runtime"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
+
+func TestRequestPluginRunsBeforeConsistentHashSelection(t *testing.T) {
+	handler, rewrittenValue, expectedBody := newConsistentHashHandler(t, "X-Tenant")
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/users", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Body.String() != expectedBody {
+		t.Fatalf(
+			"rewritten value %q selected body %q, want %q",
+			rewrittenValue,
+			recorder.Body.String(),
+			expectedBody,
+		)
+	}
+}
+
+func newConsistentHashHandler(t *testing.T, headerName string) (http.Handler, string, string) {
+	t.Helper()
+	servers := []*httptest.Server{
+		httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(writer, "A")
+		})),
+		httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(writer, "B")
+		})),
+	}
+	for _, server := range servers {
+		t.Cleanup(server.Close)
+	}
+	resources := testHandlerResources(servers[0].URL, []string{http.MethodGet})
+	resources.Routes[0].Match.Path = "/users"
+	resources.Upstreams[0].Endpoints = []model.Endpoint{
+		{URL: servers[0].URL, Weight: 1},
+		{URL: servers[1].URL, Weight: 1},
+	}
+	resources.Upstreams[0].Balancer = model.BalancerPolicy{
+		Type: model.BalancerConsistentHash,
+		HashKey: model.HashKeyPolicy{Sources: []model.HashKeySource{{
+			Type: model.HashSourceHeader,
+			Name: headerName,
+		}}},
+	}
+
+	upstreamRegistry, err := upstream.NewRegistry(64, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := upstreamRegistry.Prepare(resources.Upstreams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := candidate.Plan("baseline")
+	fallbackRequest := httptest.NewRequest(http.MethodGet, "http://gateway.test/users", nil)
+	fallbackSelection, err := plan.Select(fallbackRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		rewritten string
+		expected  string
+	)
+	for index := 0; index < 10_000; index++ {
+		value := fmt.Sprintf("tenant-%d", index)
+		request := httptest.NewRequest(http.MethodGet, "http://gateway.test/users", nil)
+		request.Header.Set(headerName, value)
+		selection, selectErr := plan.Select(request)
+		if selectErr != nil {
+			t.Fatal(selectErr)
+		}
+		if selection.EndpointID() != fallbackSelection.EndpointID() {
+			rewritten = value
+			if selection.Target().Host == mustParseURL(t, servers[0].URL).Host {
+				expected = "A"
+			} else {
+				expected = "B"
+			}
+			break
+		}
+	}
+	candidate.Rollback()
+	if rewritten == "" {
+		t.Fatal("could not find header value that differs from remote-address fallback")
+	}
+	resources.Routes[0].Plugins = []model.PluginAttachment{{
+		Name:      "header-rewrite",
+		Enabled:   true,
+		RawConfig: json.RawMessage(fmt.Sprintf(`{"request":{"set":{%q:%q}}}`, headerName, rewritten)),
+	}}
+
+	pluginRegistry, err := plugin.NewBuiltinRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := runtime.NewBuilder(pluginRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := runtime.NewManager(builder, upstreamRegistry, nil)
+	if err := manager.Apply(1, resources); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Errorf("Manager.Close() error = %v", err)
+		}
+	})
+	handler, err := NewRuntime(RuntimeOptions{
+		Snapshots:           manager,
+		MaxRequestBodyBytes: 1024,
+		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return requestctx.Middleware(handler), rewritten, expected
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
 
 func TestRouteMatchesExactPathAndPreservesRawQuery(t *testing.T) {
 	var seenQuery string
@@ -341,23 +472,29 @@ func newTestHandlerWithLogger(
 	upstreamServer := httptest.NewServer(roundTripperAdapter(transport))
 	t.Cleanup(upstreamServer.Close)
 	resources := testHandlerResources(upstreamServer.URL, methods)
-	table, err := upstream.NewTable(resources.Upstreams)
+	upstreamRegistry, err := upstream.NewRegistry(64, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(table.CloseIdleConnections)
-	registry, err := plugin.NewBuiltinRegistry()
+	pluginRegistry, err := plugin.NewBuiltinRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := runtime.NewBuilder(table, registry)
+	builder, err := runtime.NewBuilder(pluginRegistry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := runtime.NewManager(builder, nil)
+	manager := runtime.NewManager(builder, upstreamRegistry, nil)
 	if err := manager.Apply(1, resources); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Errorf("Manager.Close() error = %v", err)
+		}
+	})
 	handler, err := NewRuntime(RuntimeOptions{
 		Snapshots:           manager,
 		MaxRequestBodyBytes: maxBody,
@@ -381,7 +518,8 @@ func testHandlerResources(endpoint string, methods []string) model.ResourceSet {
 		}},
 		Upstreams: []model.Upstream{{
 			ID:        "baseline",
-			Endpoints: []string{endpoint},
+			Endpoints: []model.Endpoint{{URL: endpoint, Weight: 1}},
+			Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 			Transport: model.TransportConfig{
 				DialTimeout:               time.Second,
 				ResponseHeaderTimeout:     25 * time.Millisecond,

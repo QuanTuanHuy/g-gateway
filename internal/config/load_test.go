@@ -8,7 +8,83 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/model"
 )
+
+func TestDecodeValidV1Alpha3(t *testing.T) {
+	bootstrap, resources, err := Decode(strings.NewReader(validV3Document(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.Runtime.MaxRetiredSnapshots != 64 {
+		t.Fatalf("max retired snapshots = %d", bootstrap.Runtime.MaxRetiredSnapshots)
+	}
+	upstream := resources.Upstreams[0]
+	if upstream.Balancer.Type != model.BalancerConsistentHash {
+		t.Fatalf("balancer = %q", upstream.Balancer.Type)
+	}
+	if len(upstream.Endpoints) != 2 ||
+		upstream.Endpoints[0].Weight == 0 ||
+		upstream.Endpoints[1].Weight != 1 {
+		t.Fatalf("endpoints = %+v", upstream.Endpoints)
+	}
+	if len(upstream.Balancer.HashKey.Sources) != 2 ||
+		upstream.Balancer.HashKey.Sources[0].Name != "X-Tenant" {
+		t.Fatalf("hash key = %+v", upstream.Balancer.HashKey)
+	}
+}
+
+func TestDecodeV1Alpha3PreservesExplicitZeroWeight(t *testing.T) {
+	document := replaceOnce(t, validV3Document(t), "weight: 5", "weight: 0")
+	_, resources, err := Decode(strings.NewReader(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resources.Upstreams[0].Endpoints[0].Weight != 0 {
+		t.Fatalf("weight = %d, want 0", resources.Upstreams[0].Endpoints[0].Weight)
+	}
+}
+
+func TestDecodeV1Alpha3RejectsInvalidFieldsAndRuntimeLimit(t *testing.T) {
+	valid := validV3Document(t)
+	tests := []struct {
+		name    string
+		old     string
+		new     string
+		wantErr string
+	}{
+		{name: "unknown field", old: "runtime:\n", new: "unknown: true\nruntime:\n", wantErr: "unknown"},
+		{name: "missing hash key", old: "      hash_key:\n        sources:\n          - type: header\n            name: X-Tenant\n          - type: cookie\n            name: session_id\n", new: "", wantErr: "HASH_KEY_INVALID"},
+		{name: "zero retired snapshots", old: "max_retired_snapshots: 64", new: "max_retired_snapshots: 0", wantErr: "runtime.max_retired_snapshots"},
+		{name: "too many retired snapshots", old: "max_retired_snapshots: 64", new: "max_retired_snapshots: 1025", wantErr: "runtime.max_retired_snapshots"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := replaceOnce(t, valid, test.old, test.new)
+			_, _, err := Decode(strings.NewReader(document))
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Decode() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestDecodeLegacyVersionsDefaultRetiredSnapshots(t *testing.T) {
+	certFile, keyFile := writeTLSFiles(t)
+	for _, document := range []string{
+		validDocument(certFile, keyFile),
+		validV2Document(certFile, keyFile),
+	} {
+		bootstrap, _, err := Decode(strings.NewReader(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bootstrap.Runtime.MaxRetiredSnapshots != 64 {
+			t.Fatalf("max retired snapshots = %d", bootstrap.Runtime.MaxRetiredSnapshots)
+		}
+	}
+}
 
 func TestDecodeValidV1Alpha2(t *testing.T) {
 	certFile, keyFile := writeTLSFiles(t)
@@ -184,7 +260,9 @@ func TestDecodeValidPhase1Config(t *testing.T) {
 	if got := resources.Routes[0].Match.Methods; len(got) != 2 || got[0] != "GET" || got[1] != "POST" {
 		t.Fatalf("methods = %v, want [GET POST]", got)
 	}
-	if len(resources.Upstreams) != 1 || resources.Upstreams[0].Endpoints[0] != "http://upstream:8080" {
+	if len(resources.Upstreams) != 1 ||
+		resources.Upstreams[0].Endpoints[0].URL != "http://upstream:8080" ||
+		resources.Upstreams[0].Endpoints[0].Weight != 1 {
 		t.Fatalf("upstreams = %+v", resources.Upstreams)
 	}
 	if resources.Upstreams[0].Transport.MaxIdleConnectionsPerHost != 1024 {
@@ -421,6 +499,68 @@ services:
 upstreams:
   - id: baseline
     endpoints: [http://upstream:8080]
+    transport:
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 1024
+      max_idle_connections_per_host: 1024
+`, certFile, keyFile)
+}
+
+func validV3Document(t *testing.T) string {
+	t.Helper()
+	certFile, keyFile := writeTLSFiles(t)
+	return fmt.Sprintf(`api_version: gateway/v1alpha3
+
+runtime:
+  max_retired_snapshots: 64
+
+listeners:
+  http:
+    address: ":8080"
+  https:
+    address: ":8443"
+    certificate_file: %s
+    private_key_file: %s
+  admin:
+    address: ":9090"
+
+server:
+  read_header_timeout: 5s
+  idle_timeout: 60s
+  shutdown_timeout: 30s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 67108864
+
+telemetry:
+  request_metrics_enabled: true
+  profiling_enabled: false
+
+routes:
+  - id: users
+    priority: 100
+    match:
+      path: /users/{id}
+      methods: [GET]
+    upstream_ref: baseline
+
+services: []
+
+upstreams:
+  - id: baseline
+    endpoints:
+      - url: http://upstream-a:8080
+        weight: 5
+      - url: http://upstream-b:8080
+    balancer:
+      type: consistent_hash
+      hash_key:
+        sources:
+          - type: header
+            name: X-Tenant
+          - type: cookie
+            name: session_id
     transport:
       dial_timeout: 3s
       response_header_timeout: 10s

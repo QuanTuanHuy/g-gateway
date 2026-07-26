@@ -11,8 +11,8 @@ type routeTransport struct{}
 
 func (routeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	state, ok := requestctx.From(request.Context())
-	if !ok || state.Runtime == nil {
-		return nil, errors.New("proxy request missing compiled runtime route")
+	if !ok || !state.Selection.Valid() {
+		return nil, errors.New("proxy request missing upstream selection")
 	}
-	return state.Runtime.RoundTrip(request)
+	return state.Selection.RoundTrip(request)
 }

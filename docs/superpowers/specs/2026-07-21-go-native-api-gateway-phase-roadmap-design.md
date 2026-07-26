@@ -158,6 +158,13 @@ Phase 2 đang ở trạng thái `implementation complete; canonical evidence pen
 
 ## 7. Phase 3 — Upstream resilience
 
+Phase 3 được chia thành bốn sub-phase có design và acceptance độc lập:
+
+1. [Phase 3A — Upstream runtime and balancing kernel](2026-07-26-phase-3a-upstream-runtime-balancing-kernel-design.md);
+2. Phase 3B — active/passive health, timeout policy, replay-safe retry và retry budget;
+3. Phase 3C — upstream TLS/mTLS, protocol expansion, dynamic downstream SNI và WebSocket;
+4. Phase 3D — bounded access logging, integrated resilience acceptance và APISIX comparison.
+
 ### 7.1. Mục tiêu
 
 Tạo standalone data plane đủ tin cậy để proxy traffic thật trước khi thêm control plane.
@@ -192,11 +199,17 @@ Tạo standalone data plane đủ tin cậy để proxy traffic thật trước 
 - Upstream failure/recovery integration tests đạt.
 - Load balancing, TLS, health và retry benchmark scenarios không vi phạm comparative gate liên quan.
 
-### 7.5. Entry note
+### 7.5. Trạng thái và handoff ngày 2026-07-26
 
-Phase 3 design được phép bắt đầu từ canonical IDs, immutable request snapshot, atomic activation, compiled router/plugin pipeline, typed request context và ranh giới immutable-config/mutable-upstream-runtime đã khóa ở Phase 2.
+Phase 3A ở trạng thái `implementation complete; canonical resource evidence pending`. Strict v1alpha3, immutable upstream plans, canonical endpoint identity, shared transport profiles, transactional reconcile, WRR, consistent hash, request lease, retirement/reaper và bounded telemetry đã được triển khai. Normal acceptance và zero-allocation selector/lease evidence đã đạt trên development environment; full-envelope, race trên CGO-capable environment, reference-Linux absolute gates và APISIX E2E còn pending.
 
-Phase 3 không được đưa mutable health/pool state vào `RuntimeSnapshot`, thay routing precedence, hoặc làm mất Task 16 và các Phase 2 performance gates đang pending.
+[Phase 3A current status](../../benchmarks/phase-3a-current-status.md) ghi rõ evidence đã quan sát và các gate chưa chạy. Trạng thái này cho phép brainstorm Phase 3B nhưng chưa đánh dấu toàn bộ Phase 3 hoàn tất hoặc accepted.
+
+Phase 3B nhận immutable plans, endpoint identity, shared transports, request leases và registry lifecycle. Phase 3B không được đưa mutable health vào snapshot hoặc rebuild snapshot khi health transition.
+
+Phase 3C sở hữu upstream TLS/protocol expansion, dynamic downstream SNI certificate và WebSocket. Phase 3D sở hữu bounded access logging và canonical integrated APISIX comparison.
+
+Mọi sub-phase phải giữ router precedence và không được làm mất [deferred Phase 2 Task 16](../../benchmarks/phase-2-current-status.md#deferred-task-16).
 
 ## 8. Phase 4 — Control plane end-to-end
 
@@ -373,6 +386,6 @@ Thay đổi chỉ ảnh hưởng implementation nội bộ của phase hiện t�
 
 ## 14. Bước tiếp theo
 
-Bước tiếp theo duy nhất là brainstorm Phase 3 — Upstream resilience. Phase 3 phải nhận các contract và performance debt được ghi trong Phase 2 current status; implementation chỉ bắt đầu sau khi Phase 3 design và plan được duyệt.
+Bước tiếp theo là brainstorm Phase 3B — health, timeout, retry và retry budget — từ các contract được ghi trong Phase 3A current status. Implementation Phase 3B chỉ bắt đầu sau khi design và plan riêng được duyệt.
 
-Không lập implementation plan Phase 3 trước khi Phase 3 design spec được duyệt.
+Không gộp phạm vi Phase 3C/3D vào Phase 3B và không coi Phase 3A provisional evidence là APISIX parity hoặc production certification.

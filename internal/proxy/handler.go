@@ -66,10 +66,10 @@ func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 		Transport: routeTransport{},
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
 			state, ok := requestctx.From(proxyRequest.Out.Context())
-			if !ok || state.Runtime == nil {
+			if !ok || !state.Selection.Valid() {
 				return
 			}
-			proxyRequest.SetURL(state.Runtime.Target())
+			proxyRequest.SetURL(state.Selection.Target())
 			proxyRequest.Out.Host = proxyRequest.In.Host
 			removeHopByHopHeaders(proxyRequest.Out.Header)
 			rebuildForwardingHeaders(proxyRequest.Out.Header, proxyRequest.In)
@@ -91,13 +91,16 @@ func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 }
 
 func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	if request.URL == nil || !strings.HasPrefix(request.URL.Path, "/") || request.Method == "" {
-		writeError(writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid request")
+	lease, ok := h.snapshots.Acquire()
+	if !ok {
+		writeError(writer, http.StatusServiceUnavailable, "GATEWAY_NOT_READY", "gateway not ready")
 		return
 	}
-	snapshot := h.snapshots.Load()
-	if snapshot == nil {
-		writeError(writer, http.StatusServiceUnavailable, "GATEWAY_NOT_READY", "gateway not ready")
+	defer lease.Release()
+	snapshot := lease.Snapshot()
+
+	if request.URL == nil || !strings.HasPrefix(request.URL.Path, "/") || request.Method == "" {
+		writeError(writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid request")
 		return
 	}
 	match, err := snapshot.Match(request)
@@ -176,6 +179,22 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.writeShortCircuit(writer, request, state, result.Response)
 		return
 	}
+
+	selection, err := state.Runtime.Select(request)
+	if err != nil {
+		h.writeMatchedResponse(
+			writer,
+			request,
+			state,
+			http.StatusServiceUnavailable,
+			"UPSTREAM_UNAVAILABLE",
+			"upstream unavailable",
+			nil,
+		)
+		return
+	}
+	state.Selection = selection
+	state.Attempt = 1
 
 	if request.Body != nil {
 		request.Body = http.MaxBytesReader(writer, request.Body, h.maxRequestBodyBytes)

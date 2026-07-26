@@ -3,8 +3,9 @@ package requestctx
 import (
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"testing"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
 func TestAttachCarriesOneTypedContext(t *testing.T) {
@@ -42,7 +43,7 @@ func TestAttachIsolatesRequestStateAndScratch(t *testing.T) {
 func TestAttachPreservesTypedSnapshotAndRuntimeReferences(t *testing.T) {
 	request, state := Attach(httptest.NewRequest(http.MethodGet, "http://gateway/users", nil), 0)
 	snapshot := testSnapshot{revision: 12}
-	runtime := &testRuntimeRoute{target: mustURL(t, "http://upstream:8080")}
+	runtime := &testRuntimeRoute{}
 	state.Snapshot = snapshot
 	state.Runtime = runtime
 
@@ -50,7 +51,7 @@ func TestAttachPreservesTypedSnapshotAndRuntimeReferences(t *testing.T) {
 	if !ok {
 		t.Fatal("From() did not find attached state")
 	}
-	if got.Snapshot.Revision() != 12 || got.Runtime != runtime || got.Runtime.Target().String() != "http://upstream:8080" {
+	if got.Snapshot.Revision() != 12 || got.Runtime != runtime {
 		t.Fatalf("typed references = snapshot:%v runtime:%v", got.Snapshot, got.Runtime)
 	}
 }
@@ -93,28 +94,12 @@ func (s testSnapshot) Revision() uint64 {
 	return s.revision
 }
 
-type testRuntimeRoute struct {
-	target *url.URL
-}
+type testRuntimeRoute struct{}
 
-func (r *testRuntimeRoute) Target() *url.URL {
-	copy := *r.target
-	return &copy
-}
-
-func (r *testRuntimeRoute) RoundTrip(*http.Request) (*http.Response, error) {
-	return &http.Response{StatusCode: http.StatusOK}, nil
+func (r *testRuntimeRoute) Select(*http.Request) (upstream.Selection, error) {
+	return upstream.Selection{}, nil
 }
 
 func (r *testRuntimeRoute) RunResponse(*Context, *http.Response) error {
 	return nil
-}
-
-func mustURL(t *testing.T, raw string) *url.URL {
-	t.Helper()
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return parsed
 }

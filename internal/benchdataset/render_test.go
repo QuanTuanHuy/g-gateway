@@ -178,7 +178,8 @@ func rendererFixture() model.ResourceSet {
 		Services: []model.Service{{ID: "service", UpstreamRef: "upstream"}},
 		Upstreams: []model.Upstream{{
 			ID:        "upstream",
-			Endpoints: []string{"http://upstream-performance:8080"},
+			Endpoints: []model.Endpoint{{URL: "http://upstream-performance:8080", Weight: 1}},
+			Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 			Transport: model.TransportConfig{
 				DialTimeout:               3_000_000_000,
 				ResponseHeaderTimeout:     10_000_000_000,

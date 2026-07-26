@@ -44,7 +44,8 @@ func TestCloneResourceSetDoesNotAliasInput(t *testing.T) {
 		}},
 		Upstreams: []Upstream{{
 			ID:        "users-upstream",
-			Endpoints: []string{"http://upstream:8080"},
+			Endpoints: []Endpoint{{URL: "http://upstream:8080", Weight: 1}},
+			Balancer:  BalancerPolicy{Type: BalancerWeightedRoundRobin},
 		}},
 	}
 
@@ -55,7 +56,7 @@ func TestCloneResourceSetDoesNotAliasInput(t *testing.T) {
 	in.Routes[0].Match.Queries[0].Values[0] = "mutated"
 	in.Routes[0].Plugins[0].RawConfig[0] = 'x'
 	in.Services[0].Plugins[0].RawConfig[0] = 'x'
-	in.Upstreams[0].Endpoints[0] = "http://mutated:8080"
+	in.Upstreams[0].Endpoints[0].URL = "http://mutated:8080"
 
 	route := got.Routes[0]
 	if route.Match.Hosts[0] != "api.example.com" ||
@@ -70,7 +71,32 @@ func TestCloneResourceSetDoesNotAliasInput(t *testing.T) {
 	if string(got.Services[0].Plugins[0].RawConfig) != `{"request":{"set":{"X-Service":"users"}}}` {
 		t.Fatalf("service plugin config = %q", got.Services[0].Plugins[0].RawConfig)
 	}
-	if got.Upstreams[0].Endpoints[0] != "http://upstream:8080" {
+	if got.Upstreams[0].Endpoints[0].URL != "http://upstream:8080" {
 		t.Fatalf("upstream endpoints = %v", got.Upstreams[0].Endpoints)
+	}
+}
+
+func TestCloneResourceSetClonesEndpointAndHashSources(t *testing.T) {
+	in := ResourceSet{Upstreams: []Upstream{{
+		ID:        "users",
+		Endpoints: []Endpoint{{URL: "http://users:8080", Weight: 5}},
+		Balancer: BalancerPolicy{
+			Type: BalancerConsistentHash,
+			HashKey: HashKeyPolicy{Sources: []HashKeySource{{
+				Type: HashSourceHeader,
+				Name: "X-Tenant",
+			}}},
+		},
+	}}}
+
+	got := CloneResourceSet(in)
+	in.Upstreams[0].Endpoints[0].URL = "http://mutated:8080"
+	in.Upstreams[0].Balancer.HashKey.Sources[0].Name = "X-Mutated"
+
+	if got.Upstreams[0].Endpoints[0].URL != "http://users:8080" {
+		t.Fatalf("endpoint URL = %q", got.Upstreams[0].Endpoints[0].URL)
+	}
+	if got.Upstreams[0].Balancer.HashKey.Sources[0].Name != "X-Tenant" {
+		t.Fatalf("hash source = %+v", got.Upstreams[0].Balancer.HashKey.Sources[0])
 	}
 }

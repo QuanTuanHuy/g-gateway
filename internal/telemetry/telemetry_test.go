@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -9,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
+	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
 func TestHealthAndReadinessTransitions(t *testing.T) {
@@ -87,7 +90,7 @@ func TestRequestMetricsUseMatchedRouteID(t *testing.T) {
 			t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
 		}
 	}
-	for _, forbidden := range []string{"customer/123", "tenant.example", "upstream", "error="} {
+	for _, forbidden := range []string{"customer/123", "tenant.example", "raw-upstream.example", "error="} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("metrics contain forbidden high-cardinality value %q", forbidden)
 		}
@@ -181,6 +184,158 @@ func TestSnapshotApplyDoesNotPrecreateRouteRequestSeries(t *testing.T) {
 	body = scrapeMetrics(t, telemetry.AdminHandler())
 	if got := strings.Count(body, `gateway_http_requests_total{`); got != 1 {
 		t.Fatalf("request counter series = %d, want exactly one observed series:\n%s", got, body)
+	}
+}
+
+func TestUpstreamRegistryMetricsUseReportedCurrentState(t *testing.T) {
+	telemetry, err := New(false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	telemetry.RegistryPrepared(upstream.PrepareStats{
+		CreatedEndpoints:  2,
+		ReusedEndpoints:   3,
+		CreatedTransports: 1,
+		ReusedTransports:  4,
+		CreatedSelections: 1,
+		ReusedSelections:  5,
+		Current: upstream.RegistryStats{
+			LiveEndpoints:       5,
+			LiveTransports:      2,
+			LiveSelectionStates: 3,
+			RetiredPlanSets:     4,
+		},
+	})
+	telemetry.RegistryRetired(upstream.RegistryStats{
+		LiveEndpoints:       5,
+		LiveTransports:      2,
+		LiveSelectionStates: 3,
+		ActivePlanSets:      1,
+		RetiredPlanSets:     4,
+	})
+	if body := scrapeMetrics(t, telemetry.AdminHandler()); !strings.Contains(
+		body,
+		`gateway_runtime_retired_snapshots 4`,
+	) {
+		t.Fatalf("retired snapshot gauge was not updated at retirement:\n%s", body)
+	}
+	telemetry.RegistryRolledBack(upstream.PrepareStats{
+		Current: upstream.RegistryStats{
+			LiveEndpoints:       4,
+			LiveTransports:      1,
+			LiveSelectionStates: 2,
+			RetiredPlanSets:     3,
+		},
+	})
+	telemetry.RegistryCleaned(upstream.CleanupStats{
+		ReleasedEndpoints:  2,
+		ReleasedTransports: 1,
+		ClosedTransports:   1,
+		Current: upstream.RegistryStats{
+			LiveEndpoints:       2,
+			LiveTransports:      1,
+			LiveSelectionStates: 1,
+			RetiredPlanSets:     0,
+		},
+	})
+
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	for _, fragment := range []string{
+		`gateway_upstream_live_endpoints 2`,
+		`gateway_upstream_live_transports 1`,
+		`gateway_upstream_live_selection_states 1`,
+		`gateway_runtime_retired_snapshots 0`,
+		`gateway_upstream_registry_resources_total{action="created",kind="endpoint"} 2`,
+		`gateway_upstream_registry_resources_total{action="reused",kind="endpoint"} 3`,
+		`gateway_upstream_registry_resources_total{action="released",kind="endpoint"} 2`,
+		`gateway_upstream_registry_rollbacks_total 1`,
+		`gateway_upstream_transport_cleanup_total 1`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
+		}
+	}
+}
+
+func TestBalancerAndHashFallbackMetricsUseOnlyBoundedLabels(t *testing.T) {
+	telemetry, err := New(true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := upstream.NewRegistry(64, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := registry.Close(ctx); err != nil {
+			t.Errorf("Registry.Close() error = %v", err)
+		}
+	})
+	candidate, err := registry.Prepare([]model.Upstream{{
+		ID:        "users",
+		Endpoints: []model.Endpoint{{URL: "http://secret-host.example:8080", Weight: 1}},
+		Balancer: model.BalancerPolicy{
+			Type: model.BalancerConsistentHash,
+			HashKey: model.HashKeyPolicy{Sources: []model.HashKeySource{{
+				Type: model.HashSourceHeader,
+				Name: "X-Secret-Hash",
+			}}},
+		},
+		Transport: model.TransportConfig{
+			DialTimeout:               time.Second,
+			ResponseHeaderTimeout:     time.Second,
+			IdleConnectionTimeout:     time.Minute,
+			MaxIdleConnections:        8,
+			MaxIdleConnectionsPerHost: 8,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Rollback()
+	plan, ok := candidate.Plan("users")
+	if !ok {
+		t.Fatal("candidate plan users is missing")
+	}
+	next := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		state, ok := requestctx.From(request.Context())
+		if !ok {
+			t.Fatal("request context is missing")
+		}
+		state.Upstream = &requestctx.UpstreamMeta{ID: "users"}
+		state.Selection, err = plan.Select(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.WriteHeader(http.StatusNoContent)
+	})
+	wrapped := requestctx.Middleware(telemetry.Wrap(next))
+	request := httptest.NewRequest(http.MethodGet, "http://gateway/private/customer/123", nil)
+	request.RemoteAddr = "203.0.113.99:54321"
+
+	wrapped.ServeHTTP(httptest.NewRecorder(), request)
+
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	for _, fragment := range []string{
+		`gateway_upstream_balancer_selections_total{algorithm="consistent_hash",upstream_id="users"} 1`,
+		`gateway_upstream_hash_fallback_total{upstream_id="users"} 1`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
+		}
+	}
+	for _, forbidden := range []string{
+		"secret-host.example",
+		"203.0.113.99",
+		"customer/123",
+		"X-Secret-Hash",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("metrics contain forbidden high-cardinality value %q:\n%s", forbidden, body)
+		}
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 )
 
 type PredicateOperator string
+type BalancerType string
+type HashSourceType string
 
 const (
 	PredicateExists    PredicateOperator = "exists"
@@ -13,6 +15,14 @@ const (
 	PredicateEquals    PredicateOperator = "equals"
 	PredicateNotEquals PredicateOperator = "not_equals"
 	PredicateOneOf     PredicateOperator = "one_of"
+
+	BalancerWeightedRoundRobin BalancerType = "weighted_round_robin"
+	BalancerConsistentHash     BalancerType = "consistent_hash"
+
+	HashSourceHeader     HashSourceType = "header"
+	HashSourceCookie     HashSourceType = "cookie"
+	HashSourceRemoteAddr HashSourceType = "remote_addr"
+	HashSourceLiteral    HashSourceType = "literal"
 )
 
 type ResourceSet struct {
@@ -58,8 +68,29 @@ type PluginAttachment struct {
 
 type Upstream struct {
 	ID        string
-	Endpoints []string
+	Endpoints []Endpoint
+	Balancer  BalancerPolicy
 	Transport TransportConfig
+}
+
+type Endpoint struct {
+	URL    string
+	Weight uint32
+}
+
+type BalancerPolicy struct {
+	Type    BalancerType
+	HashKey HashKeyPolicy
+}
+
+type HashKeyPolicy struct {
+	Sources []HashKeySource
+}
+
+type HashKeySource struct {
+	Type  HashSourceType
+	Name  string
+	Value string
 }
 
 type TransportConfig struct {
@@ -88,7 +119,11 @@ func CloneResourceSet(in ResourceSet) ResourceSet {
 	}
 	for i := range in.Upstreams {
 		out.Upstreams[i] = in.Upstreams[i]
-		out.Upstreams[i].Endpoints = append([]string(nil), in.Upstreams[i].Endpoints...)
+		out.Upstreams[i].Endpoints = append([]Endpoint(nil), in.Upstreams[i].Endpoints...)
+		out.Upstreams[i].Balancer.HashKey.Sources = append(
+			[]HashKeySource(nil),
+			in.Upstreams[i].Balancer.HashKey.Sources...,
+		)
 	}
 
 	return out

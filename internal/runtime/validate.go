@@ -5,10 +5,9 @@ import (
 	"strings"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
-	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
-func validateResources(revision uint64, resources model.ResourceSet, table *upstream.Table) *BuildError {
+func validateResources(revision uint64, resources model.ResourceSet) *BuildError {
 	if revision == 0 {
 		return &BuildError{Code: "REVISION_INVALID", Stage: StageValidate, Cause: fmt.Errorf("revision must be greater than zero")}
 	}
@@ -19,16 +18,6 @@ func validateResources(revision uint64, resources model.ResourceSet, table *upst
 		err.Revision = revision
 		return err
 	}
-	if err := table.ValidateResources(resources.Upstreams); err != nil {
-		return &BuildError{
-			Code:     "UPSTREAM_SET_IMMUTABLE",
-			Stage:    StageValidate,
-			Revision: revision,
-			Field:    "upstreams",
-			Cause:    err,
-		}
-	}
-
 	upstreams := make(map[string]struct{}, len(resources.Upstreams))
 	for _, resource := range resources.Upstreams {
 		upstreams[resource.ID] = struct{}{}

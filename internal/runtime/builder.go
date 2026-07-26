@@ -11,28 +11,33 @@ import (
 )
 
 type Builder struct {
-	upstreams   *upstream.Table
-	registry    *plugin.Registry
+	plugins     *plugin.Registry
 	beforeBuild func(uint64)
 }
 
-func NewBuilder(upstreams *upstream.Table, registry *plugin.Registry) (*Builder, error) {
-	if upstreams == nil {
-		return nil, fmt.Errorf("upstream table is required")
-	}
-	if registry == nil {
+func NewBuilder(plugins *plugin.Registry) (*Builder, error) {
+	if plugins == nil {
 		return nil, fmt.Errorf("plugin registry is required")
 	}
-	return &Builder{upstreams: upstreams, registry: registry}, nil
+	return &Builder{plugins: plugins}, nil
 }
 
-func (b *Builder) Build(revision uint64, input model.ResourceSet) (*Snapshot, error) {
+func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *upstream.Candidate) (*Snapshot, error) {
 	if b.beforeBuild != nil {
 		b.beforeBuild(revision)
 	}
 	resources := model.CloneResourceSet(input)
-	if err := validateResources(revision, resources, b.upstreams); err != nil {
+	if err := validateResources(revision, resources); err != nil {
 		return nil, err
+	}
+	if candidate == nil {
+		return nil, &BuildError{
+			Code:     "UPSTREAM_CANDIDATE_MISSING",
+			Stage:    StageResolve,
+			Revision: revision,
+			Field:    "upstreams",
+			Cause:    fmt.Errorf("upstream candidate is required"),
+		}
 	}
 
 	services := make(map[string]model.Service, len(resources.Services))
@@ -56,7 +61,7 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet) (*Snapshot, er
 		} else {
 			upstreamID = route.UpstreamRef
 		}
-		upstreamRuntime, ok := b.upstreams.Get(upstreamID)
+		upstreamPlan, ok := candidate.Plan(upstreamID)
 		if !ok {
 			return nil, &BuildError{
 				Code:         "REFERENCE_NOT_FOUND",
@@ -65,10 +70,10 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet) (*Snapshot, er
 				ResourceKind: "route",
 				ResourceID:   route.ID,
 				Field:        "upstream_ref",
-				Cause:        fmt.Errorf("upstream runtime %q does not exist", upstreamID),
+				Cause:        fmt.Errorf("upstream plan %q does not exist", upstreamID),
 			}
 		}
-		chain, err := b.registry.CompileChain(servicePlugins, route.Plugins)
+		chain, err := b.plugins.CompileChain(servicePlugins, route.Plugins)
 		if err != nil {
 			return nil, &BuildError{
 				Code:         "PLUGIN_COMPILE_FAILED",
@@ -86,7 +91,7 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet) (*Snapshot, er
 			meta:         &requestctx.RouteMeta{ID: route.ID},
 			service:      serviceMeta,
 			upstreamMeta: &requestctx.UpstreamMeta{ID: upstreamID},
-			upstream:     upstreamRuntime,
+			plan:         upstreamPlan,
 			plugins:      chain,
 		})
 		specs = append(specs, router.RouteSpec{

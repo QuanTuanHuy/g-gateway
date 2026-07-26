@@ -237,7 +237,8 @@ func baseResources(endpoint string, includeService bool) model.ResourceSet {
 	resources := model.ResourceSet{
 		Upstreams: []model.Upstream{{
 			ID:        benchmarkUpstream,
-			Endpoints: []string{endpoint},
+			Endpoints: []model.Endpoint{{URL: endpoint, Weight: 1}},
+			Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
 			Transport: model.TransportConfig{
 				DialTimeout:               3 * time.Second,
 				ResponseHeaderTimeout:     10 * time.Second,

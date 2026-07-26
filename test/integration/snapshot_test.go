@@ -180,6 +180,9 @@ func startSnapshotGateway(t *testing.T, resources model.ResourceSet) (*gateway.G
 			PrivateKeyFile:  keyFile,
 		},
 		Admin: config.ListenerConfig{Address: "127.0.0.1:0"},
+		Runtime: config.RuntimeConfig{
+			MaxRetiredSnapshots: 1024,
+		},
 		Server: config.ServerConfig{
 			ReadHeaderTimeout:   time.Second,
 			IdleTimeout:         time.Minute,
@@ -229,8 +232,18 @@ func snapshotResources(endpointA, endpointB, target, marker string) model.Resour
 			}},
 		}},
 		Upstreams: []model.Upstream{
-			{ID: "upstream-a", Endpoints: []string{endpointA}, Transport: transport},
-			{ID: "upstream-b", Endpoints: []string{endpointB}, Transport: transport},
+			{
+				ID:        "upstream-a",
+				Endpoints: []model.Endpoint{{URL: endpointA, Weight: 1}},
+				Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
+				Transport: transport,
+			},
+			{
+				ID:        "upstream-b",
+				Endpoints: []model.Endpoint{{URL: endpointB, Weight: 1}},
+				Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
+				Transport: transport,
+			},
 		},
 	}
 }

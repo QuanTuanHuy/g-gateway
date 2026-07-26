@@ -3,18 +3,19 @@ package config
 import (
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
+	upstreamkernel "github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
 const (
 	apiVersionV1Alpha1 = "gateway/v1alpha1"
 	apiVersionV1Alpha2 = "gateway/v1alpha2"
+	apiVersionV1Alpha3 = "gateway/v1alpha3"
 )
 
 func validateV1(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
@@ -63,6 +64,43 @@ func validateV2(version string, bootstrap *BootstrapConfig, resources *model.Res
 			return err
 		}
 	}
+	for i := range resources.Services {
+		if err := validateService(&resources.Services[i], i, resources.Upstreams); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Routes {
+		if err := validateRouteV2(&resources.Routes[i], i, resources.Services, resources.Upstreams); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateV3(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha3 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha3)
+	}
+	if err := validateBootstrap(*bootstrap); err != nil {
+		return err
+	}
+	if got := bootstrap.Runtime.MaxRetiredSnapshots; got < 1 || got > 1024 {
+		return fmt.Errorf("runtime.max_retired_snapshots: must be between 1 and 1024")
+	}
+	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if len(resources.Routes) == 0 {
+		return fmt.Errorf("routes: must contain at least one route")
+	}
+	if len(resources.Upstreams) == 0 {
+		return fmt.Errorf("upstreams: must contain at least one upstream")
+	}
+	normalized, err := upstreamkernel.Normalize(resources.Upstreams)
+	if err != nil {
+		return err
+	}
+	resources.Upstreams = normalized
 	for i := range resources.Services {
 		if err := validateService(&resources.Services[i], i, resources.Upstreams); err != nil {
 			return err
@@ -344,31 +382,13 @@ func validateUpstream(upstream *model.Upstream, index int) error {
 	if len(upstream.Endpoints) != 1 {
 		return fmt.Errorf("upstreams[%d].endpoints: Phase 1 requires exactly one endpoint", index)
 	}
-	endpoint, err := url.Parse(upstream.Endpoints[0])
+	if upstream.Endpoints[0].Weight != 1 {
+		return fmt.Errorf("upstreams[%d].endpoints[0].weight: legacy configuration requires weight 1", index)
+	}
+	normalized, err := upstreamkernel.Normalize([]model.Upstream{*upstream})
 	if err != nil {
-		return fmt.Errorf("upstreams[%d].endpoints[0]: %w", index, err)
+		return err
 	}
-	if endpoint.Scheme != "http" {
-		return fmt.Errorf("upstreams[%d].endpoints[0]: Phase 1 requires scheme http", index)
-	}
-	if endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
-		return fmt.Errorf("upstreams[%d].endpoints[0]: must contain only an HTTP scheme and host", index)
-	}
-	transport := upstream.Transport
-	checks := []struct {
-		field string
-		valid bool
-	}{
-		{field: "dial_timeout", valid: transport.DialTimeout > 0},
-		{field: "response_header_timeout", valid: transport.ResponseHeaderTimeout > 0},
-		{field: "idle_connection_timeout", valid: transport.IdleConnectionTimeout > 0},
-		{field: "max_idle_connections", valid: transport.MaxIdleConnections > 0},
-		{field: "max_idle_connections_per_host", valid: transport.MaxIdleConnectionsPerHost > 0},
-	}
-	for _, check := range checks {
-		if !check.valid {
-			return fmt.Errorf("upstreams[%d].transport.%s: must be greater than zero", index, check.field)
-		}
-	}
+	*upstream = normalized[0]
 	return nil
 }
