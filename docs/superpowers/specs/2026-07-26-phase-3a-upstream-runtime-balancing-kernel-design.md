@@ -2,6 +2,7 @@
 
 - Date: 2026-07-26
 - Status: Approved
+- Implementation status: `implementation complete; canonical resource evidence pending`
 - Parent phase: Phase 3 — Upstream resilience
 - Delivery strategy: Risk-first vertical slice
 
@@ -248,7 +249,7 @@ Phase 3A does not add unused health fields or a health-provider interface. Phase
 
 ### 7.3. Selection state
 
-WRR state is keyed by stable upstream ID and balancer family. It contains only an atomic sequence. A weight or endpoint-set change may reuse the sequence; an algorithm-family change creates a new selection state. Consistent hash is stateless in Phase 3A.
+Selection-state ownership is keyed by stable upstream ID and balancer family. The state contains an atomic sequence used by WRR. A weight or endpoint-set change may reuse the state; an algorithm-family change creates a new state. Consistent-hash selection does not mutate the state in Phase 3A.
 
 Mutable registry state is reachable through pointers held by a plan, but plan configuration and membership remain immutable.
 
@@ -288,7 +289,7 @@ Each published snapshot starts with one manager-ownership reference.
 2. uses CAS to increment its positive reference count;
 3. retries with the current active pointer if the loaded snapshot already reached zero.
 
-`Lease.Release` performs one guarded atomic decrement. Double release is treated as a programming invariant violation in tests and cannot silently underflow.
+`Lease.Release` performs one guarded atomic decrement and is idempotent for the same lease value. The underlying plan-set reference counter still treats an unguarded double release or underflow as a programming invariant violation in tests.
 
 Publication uses an atomic pointer swap. A request that acquired the old snapshot before publication may finish on the old plan. A request that acquires after publication receives the new snapshot. No request combines route/plugin state from one revision with upstream membership from another.
 
@@ -425,9 +426,9 @@ Missing hash input follows the remote-address fallback policy and does not fail 
 Phase 3A adds:
 
 - active and retired snapshot gauges;
-- live endpoint-runtime and transport-profile gauges;
-- registry create, reuse, retire, and cleanup counters;
-- reconcile duration;
+- live endpoint-runtime, transport-profile, and selection-state gauges;
+- registry create, reuse, release, rollback, and transport-cleanup counters;
+- snapshot apply/reconcile duration;
 - candidate rollback count;
 - balancer selections by algorithm;
 - hash-key fallback count;
@@ -509,8 +510,8 @@ Forced connection close must cause request cancellation and lease release throug
 Microbenchmarks cover:
 
 - snapshot acquire/release;
-- WRR with 1, 100, and 1,000 endpoints;
-- consistent hash with 1, 100, and 1,000 endpoints;
+- WRR with 1, 2, 100, and 1,000 endpoints, where 2 is the relative-scale baseline;
+- consistent hash with 1, 10, 100, and 1,000 endpoints, where 10 is the relative-scale baseline;
 - header, cookie, compound, and fallback hash keys;
 - full and weight-only reconcile;
 - active heap and retained heap after 20 swaps.
@@ -618,4 +619,6 @@ No later sub-phase may erase the deferred Phase 2 Task 16 evidence debt or repre
 - [Phase 2 runtime snapshot and router kernel design](2026-07-23-phase-2-runtime-snapshot-router-kernel-design.md)
 - [Phase 2 deferred benchmark and Phase 3 handoff](2026-07-26-phase-2-deferred-benchmark-handoff-design.md)
 - [Phase 2 current evidence status](../../benchmarks/phase-2-current-status.md)
+- [Phase 3A current evidence status](../../benchmarks/phase-3a-current-status.md)
+- [Phase 3A operational runbook](../../operations/phase-3a-runbook.md)
 - [APISIX architecture and source analysis](../../architecture/apache-api-six-architecture-design.md)
