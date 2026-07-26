@@ -31,7 +31,7 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet) (*Snapshot, er
 		b.beforeBuild(revision)
 	}
 	resources := model.CloneResourceSet(input)
-	if err := validateResources(revision, resources, b.upstreams); err != nil {
+	if err := validateResources(revision, resources); err != nil {
 		return nil, err
 	}
 

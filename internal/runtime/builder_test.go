@@ -107,9 +107,6 @@ func TestBuilderRejectsInvalidResources(t *testing.T) {
 		{name: "invalid plugin config", mutate: func(r *model.ResourceSet) {
 			r.Routes[0].Plugins[0].RawConfig = json.RawMessage(`{"unknown":true}`)
 		}, code: "PLUGIN_COMPILE_FAILED"},
-		{name: "immutable upstream change", mutate: func(r *model.ResourceSet) {
-			r.Upstreams[0].Endpoints[0].URL = "http://changed:8080"
-		}, code: "UPSTREAM_SET_IMMUTABLE"},
 		{name: "duplicate normalized match", mutate: func(r *model.ResourceSet) {
 			duplicate := r.Routes[0]
 			duplicate.ID = "duplicate"

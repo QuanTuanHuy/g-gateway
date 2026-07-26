@@ -3,13 +3,13 @@ package config
 import (
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
+	upstreamkernel "github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
 const (
@@ -347,31 +347,10 @@ func validateUpstream(upstream *model.Upstream, index int) error {
 	if upstream.Endpoints[0].Weight != 1 {
 		return fmt.Errorf("upstreams[%d].endpoints[0].weight: legacy configuration requires weight 1", index)
 	}
-	endpoint, err := url.Parse(upstream.Endpoints[0].URL)
+	normalized, err := upstreamkernel.Normalize([]model.Upstream{*upstream})
 	if err != nil {
-		return fmt.Errorf("upstreams[%d].endpoints[0]: %w", index, err)
+		return err
 	}
-	if endpoint.Scheme != "http" {
-		return fmt.Errorf("upstreams[%d].endpoints[0]: Phase 1 requires scheme http", index)
-	}
-	if endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
-		return fmt.Errorf("upstreams[%d].endpoints[0]: must contain only an HTTP scheme and host", index)
-	}
-	transport := upstream.Transport
-	checks := []struct {
-		field string
-		valid bool
-	}{
-		{field: "dial_timeout", valid: transport.DialTimeout > 0},
-		{field: "response_header_timeout", valid: transport.ResponseHeaderTimeout > 0},
-		{field: "idle_connection_timeout", valid: transport.IdleConnectionTimeout > 0},
-		{field: "max_idle_connections", valid: transport.MaxIdleConnections > 0},
-		{field: "max_idle_connections_per_host", valid: transport.MaxIdleConnectionsPerHost > 0},
-	}
-	for _, check := range checks {
-		if !check.valid {
-			return fmt.Errorf("upstreams[%d].transport.%s: must be greater than zero", index, check.field)
-		}
-	}
+	*upstream = normalized[0]
 	return nil
 }
