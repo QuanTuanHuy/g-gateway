@@ -76,6 +76,41 @@ Previously captured opt-in acceptance values:
 
 These numbers came from the previously executed Go acceptance and five-run router microbenchmark commands on the development environment. They show the compile, heap, steady-state, and zero-allocation development gates behaving within their thresholds. No committed Phase 2 raw-result directory exists, so these values remain provisional and are not a replacement for reference-Linux or end-to-end evidence.
 
+## Documentation checkpoint verification
+
+The following short checks were run on 2026-07-26 with local Go 1.26.5:
+
+| Command | Outcome |
+|---|---|
+| Local Markdown target check across README, runbook, status, roadmap, and handoff specs | Passed; zero missing targets |
+| `go vet ./...` | Passed |
+| `go test ./... -count=1` | Passed |
+| `go build ./cmd/...` | Passed |
+| `gofmt -l .` | Did not pass; reported 14 previously committed files with CRLF working-tree line endings |
+
+The `gofmt` investigation found `core.autocrlf=true`, no repository `.gitattributes`, and CRLF sequences in the reported working-tree files. `gofmt -d cmd/bench-report/main.go` showed a line-ending-only rewrite with no Go token change. This documentation checkpoint deliberately did not normalize unrelated source files.
+
+The reported files were:
+
+```text
+cmd/bench-report/main.go
+cmd/gateway-dp/main.go
+cmd/test-upstream/main.go
+internal/benchreport/report.go
+internal/benchreport/report_test.go
+internal/gateway/response_state.go
+internal/proxy/errors.go
+internal/proxy/headers.go
+internal/proxy/headers_test.go
+internal/testupstream/server.go
+internal/testupstream/server_test.go
+internal/upstream/runtime_test.go
+test/integration/gateway_test.go
+test/integration/tls_test.go
+```
+
+This is a repository line-ending hygiene issue, not evidence that the Go test/build gate failed. Formatting is nevertheless recorded as not passing until line-ending policy is addressed in a separately scoped change.
+
 ## Deferred Task 16
 
 Task 16 is deferred in full. The repository currently has no:
@@ -133,4 +168,3 @@ Phase 3 may design a lifecycle-aware upstream runtime registry, balancing, healt
 - Runtime integration commit: `27813bc`
 
 The result root is Git-ignored by design. No Phase 2 end-to-end raw evidence is present at this checkpoint.
-
