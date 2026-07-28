@@ -126,7 +126,7 @@ func newRuntimeTestHandler(
 	apply bool,
 ) (http.Handler, *runtime.Manager, *upstream.Registry) {
 	t.Helper()
-	upstreamRegistry, err := upstream.NewRegistry(64, nil)
+	upstreamRegistry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}

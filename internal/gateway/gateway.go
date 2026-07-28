@@ -75,8 +75,21 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	if maxRetiredSnapshots == 0 {
 		maxRetiredSnapshots = config.DefaultMaxRetiredSnapshots
 	}
+	healthWorkers := bootstrap.Runtime.Health.Workers
+	if healthWorkers == 0 {
+		healthWorkers = config.DefaultHealthWorkers
+	}
+	healthQueueCapacity := bootstrap.Runtime.Health.ReadyQueueCapacity
+	if healthQueueCapacity == 0 {
+		healthQueueCapacity = config.DefaultHealthQueueCapacity
+	}
 	lifecycle := newLifecycleObserver(telemetryRuntime, logger)
-	upstreamRegistry, err := upstream.NewRegistry(maxRetiredSnapshots, lifecycle)
+	upstreamRegistry, err := upstream.NewRegistry(upstream.RegistryOptions{
+		MaxRetiredSnapshots: maxRetiredSnapshots,
+		HealthWorkers:       healthWorkers,
+		HealthQueueCapacity: healthQueueCapacity,
+		Observer:            lifecycle,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("construct upstream registry: %w", err)
 	}

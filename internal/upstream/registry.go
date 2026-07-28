@@ -31,10 +31,30 @@ type selectionEntry struct {
 	refs  int
 }
 
+type healthEntry struct {
+	runtime      *EndpointHealth
+	registration *healthRegistration
+	refs         int
+}
+
+type budgetEntry struct {
+	runtime *retryBudget
+	refs    int
+}
+
 type resourceRefs struct {
 	endpointIDs   []string
 	transportKeys []transportKey
 	selectionKeys []selectionKey
+	healthKeys    []healthKey
+	budgetKeys    []budgetKey
+}
+
+type RegistryOptions struct {
+	MaxRetiredSnapshots int
+	HealthWorkers       int
+	HealthQueueCapacity int
+	Observer            Observer
 }
 
 type Registry struct {
@@ -45,6 +65,10 @@ type Registry struct {
 	endpoints           map[string]*endpointEntry
 	transports          map[transportKey]*transportEntry
 	selections          map[selectionKey]*selectionEntry
+	health              map[healthKey]*healthEntry
+	budgets             map[budgetKey]*budgetEntry
+	coordinator         *HealthCoordinator
+	generation          atomic.Uint64
 	activePlanSets      int
 	retired             []*PlanSet
 	reapWake            chan struct{}
@@ -61,16 +85,26 @@ type Candidate struct {
 	done     atomic.Bool
 }
 
-func NewRegistry(maxRetiredSnapshots int, observer Observer) (*Registry, error) {
-	if maxRetiredSnapshots < 1 || maxRetiredSnapshots > 1024 {
+func NewRegistry(options RegistryOptions) (*Registry, error) {
+	if options.MaxRetiredSnapshots < 1 || options.MaxRetiredSnapshots > 1024 {
 		return nil, fmt.Errorf("max retired snapshots must be between 1 and 1024")
 	}
+	coordinator, err := newHealthCoordinator(healthCoordinatorOptions{
+		Workers:       options.HealthWorkers,
+		QueueCapacity: options.HealthQueueCapacity,
+	})
+	if err != nil {
+		return nil, err
+	}
 	registry := &Registry{
-		maxRetiredSnapshots: maxRetiredSnapshots,
-		observer:            observer,
+		maxRetiredSnapshots: options.MaxRetiredSnapshots,
+		observer:            options.Observer,
 		endpoints:           make(map[string]*endpointEntry),
 		transports:          make(map[transportKey]*transportEntry),
 		selections:          make(map[selectionKey]*selectionEntry),
+		health:              make(map[healthKey]*healthEntry),
+		budgets:             make(map[budgetKey]*budgetEntry),
+		coordinator:         coordinator,
 		reapWake:            make(chan struct{}, 1),
 		reapStop:            make(chan struct{}),
 		reapDone:            make(chan struct{}),
@@ -185,12 +219,51 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 		entry.refs++
 		owned.endpointIDs = append(owned.endpointIDs, identity)
 		if endpoint.Weight > 0 {
+			var health *EndpointHealth
+			if resource.Health.Active != nil {
+				key := makeHealthKey(resource.ID, identity, resource.Health)
+				healthRuntime := r.health[key]
+				if healthRuntime == nil {
+					health = newEndpointHealth(identity, resource.Health, r.generation.Add(1))
+					registration := r.coordinator.Register(ProbeTarget{
+						EndpointID: identity,
+						URL:        entry.runtime.target,
+						Generation: health.Generation(),
+						Policy:     *resource.Health.Active,
+					}, health)
+					healthRuntime = &healthEntry{runtime: health, registration: registration}
+					r.health[key] = healthRuntime
+					stats.CreatedHealthTrackers++
+				} else {
+					health = healthRuntime.runtime
+					stats.ReusedHealthTrackers++
+				}
+				healthRuntime.refs++
+				owned.healthKeys = append(owned.healthKeys, key)
+			}
 			planEndpoints = append(planEndpoints, planEndpoint{
 				runtime:  entry.runtime,
+				health:   health,
 				identity: identity,
 				weight:   endpoint.Weight,
 			})
 		}
+	}
+
+	var budget *retryBudget
+	if resource.Retry.Budget.Burst > 0 && resource.Retry.Budget.MaxInflight > 0 {
+		key := makeBudgetKey(resource.ID, resource.Retry.Budget)
+		entry := r.budgets[key]
+		if entry == nil {
+			entry = &budgetEntry{runtime: newRetryBudget(resource.Retry.Budget)}
+			r.budgets[key] = entry
+			stats.CreatedRetryBudgets++
+		} else {
+			stats.ReusedRetryBudgets++
+		}
+		entry.refs++
+		owned.budgetKeys = append(owned.budgetKeys, key)
+		budget = entry.runtime
 	}
 
 	weighted := make([]weightedEndpoint, len(planEndpoints))
@@ -205,6 +278,13 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 		algorithm: resource.Balancer.Type,
 		endpoints: planEndpoints,
 		transport: transport.runtime,
+		budget:    budget,
+	}
+	for _, endpoint := range planEndpoints {
+		if endpoint.health != nil {
+			key := makeHealthKey(resource.ID, endpoint.identity, resource.Health)
+			plan.healthRegistrations = append(plan.healthRegistrations, r.health[key].registration)
+		}
 	}
 	switch resource.Balancer.Type {
 	case model.BalancerWeightedRoundRobin:
@@ -242,6 +322,8 @@ func (r *Registry) statsLocked() RegistryStats {
 		LiveEndpoints:       len(r.endpoints),
 		LiveTransports:      len(r.transports),
 		LiveSelectionStates: len(r.selections),
+		LiveHealthTrackers:  len(r.health),
+		LiveRetryBudgets:    len(r.budgets),
 		ActivePlanSets:      r.activePlanSets,
 		RetiredPlanSets:     len(r.retired),
 	}
@@ -260,6 +342,8 @@ func (r *Registry) Close(ctx context.Context) error {
 		if stats.LiveEndpoints == 0 &&
 			stats.LiveTransports == 0 &&
 			stats.LiveSelectionStates == 0 &&
+			stats.LiveHealthTrackers == 0 &&
+			stats.LiveRetryBudgets == 0 &&
 			stats.ActivePlanSets == 0 &&
 			stats.RetiredPlanSets == 0 {
 			r.stopReaperOnce.Do(func() {
@@ -267,7 +351,7 @@ func (r *Registry) Close(ctx context.Context) error {
 			})
 			select {
 			case <-r.reapDone:
-				return nil
+				return r.coordinator.Close(ctx)
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -395,8 +479,37 @@ func (r *Registry) releaseRefsLocked(owned resourceRefs) (CleanupStats, []*trans
 			delete(r.selections, key)
 		}
 	}
+	for _, key := range owned.healthKeys {
+		entry := r.health[key]
+		if entry == nil || entry.refs <= 0 {
+			panic("upstream health reference underflow")
+		}
+		entry.refs--
+		cleanup.ReleasedHealthTrackers++
+		if entry.refs == 0 {
+			delete(r.health, key)
+			entry.registration.Retire()
+		}
+	}
+	for _, key := range owned.budgetKeys {
+		entry := r.budgets[key]
+		if entry == nil || entry.refs <= 0 {
+			panic("upstream retry budget reference underflow")
+		}
+		entry.refs--
+		cleanup.ReleasedRetryBudgets++
+		if entry.refs == 0 {
+			delete(r.budgets, key)
+		}
+	}
 	cleanup.Current = r.statsLocked()
 	return cleanup, transports
+}
+
+func (r *Registry) StopHealth() {
+	if r != nil && r.coordinator != nil {
+		r.coordinator.StopHealth()
+	}
 }
 
 func closeTransports(transports []*transportRuntime) {

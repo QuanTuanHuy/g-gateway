@@ -129,7 +129,7 @@ func newRegistryManagerWithObserver(t *testing.T, observer Observer) *Manager {
 
 func newManagerForBuilder(t *testing.T, builder *Builder, observer Observer) *Manager {
 	t.Helper()
-	registry, err := upstream.NewRegistry(64, nil)
+	registry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}

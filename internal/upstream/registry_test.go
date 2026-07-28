@@ -59,6 +59,56 @@ func TestRegistryWeightOnlyChangeReusesRuntimesButCreatesPlan(t *testing.T) {
 	}
 }
 
+func TestRegistryReusesHealthAndBudgetAcrossWeightOnlyRevision(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	resource := testUpstream("users", testEndpoint("http://users-a:8080", 1))
+	resource.Health, resource.Retry = validResiliencePolicies()
+	first := mustPrepare(t, registry, []model.Upstream{resource})
+	firstPlan, _ := first.Plan("users")
+	firstHealth := firstPlan.endpoints[0].health
+	firstBudget := firstPlan.budget
+	firstHealth.Observe(Observation{Source: SourceActive, Kind: OutcomeTimeout})
+	firstHealth.Observe(Observation{Source: SourceActive, Kind: OutcomeTimeout})
+
+	resource.Endpoints[0].Weight = 5
+	second := mustPrepare(t, registry, []model.Upstream{resource})
+	defer first.Rollback()
+	defer second.Rollback()
+	secondPlan, _ := second.Plan("users")
+	if firstHealth != secondPlan.endpoints[0].health ||
+		secondPlan.endpoints[0].health.State() != HealthUnhealthy {
+		t.Fatal("health runtime was not reused")
+	}
+	if firstBudget != secondPlan.budget {
+		t.Fatal("retry budget was not reused")
+	}
+}
+
+func TestRegistryHealthPolicyChangeKeepsTransportButResetsHealth(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	resource := testUpstream("users", testEndpoint("http://users-a:8080", 1))
+	resource.Health, resource.Retry = validResiliencePolicies()
+	first := mustPrepare(t, registry, []model.Upstream{resource})
+	defer first.Rollback()
+	firstPlan, _ := first.Plan("users")
+
+	resource.Health.Active.HealthyInterval += time.Second
+	second := mustPrepare(t, registry, []model.Upstream{resource})
+	defer second.Rollback()
+	secondPlan, _ := second.Plan("users")
+	if firstPlan.transport != secondPlan.transport {
+		t.Fatal("health-only change replaced transport")
+	}
+	if firstPlan.endpoints[0].health == secondPlan.endpoints[0].health ||
+		secondPlan.endpoints[0].health.State() != HealthUnknown {
+		t.Fatal("health policy change did not create unknown tracker")
+	}
+	stats := registry.Stats()
+	if stats.LiveHealthTrackers != 2 || stats.LiveRetryBudgets != 1 {
+		t.Fatalf("registry stats = %+v", stats)
+	}
+}
+
 func TestRegistryTransportOnlyChangeReusesEndpoints(t *testing.T) {
 	registry := mustRegistry(t, 64, nil)
 	resource := testUpstream("users", testEndpoint("http://users-a:8080", 1))
@@ -228,7 +278,12 @@ func (panicRegistryObserver) RegistryError(string, error) {
 
 func mustRegistry(t testing.TB, maxRetiredSnapshots int, observer Observer) *Registry {
 	t.Helper()
-	registry, err := NewRegistry(maxRetiredSnapshots, observer)
+	registry, err := NewRegistry(RegistryOptions{
+		MaxRetiredSnapshots: maxRetiredSnapshots,
+		HealthWorkers:       2,
+		HealthQueueCapacity: 16,
+		Observer:            observer,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

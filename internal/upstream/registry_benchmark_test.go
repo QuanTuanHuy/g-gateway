@@ -41,7 +41,7 @@ func benchmarkRegistryReconcile(
 	revision []model.Upstream,
 ) {
 	b.Helper()
-	registry, err := NewRegistry(64, nil)
+	registry, err := NewRegistry(RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		b.Fatal(err)
 	}

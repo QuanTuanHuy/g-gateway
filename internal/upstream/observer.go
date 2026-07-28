@@ -1,22 +1,28 @@
 package upstream
 
 type PrepareStats struct {
-	CreatedEndpoints  int
-	ReusedEndpoints   int
-	CreatedTransports int
-	ReusedTransports  int
-	CreatedSelections int
-	ReusedSelections  int
-	WRRSlots          int
-	HashPoints        int
-	Current           RegistryStats
+	CreatedEndpoints      int
+	ReusedEndpoints       int
+	CreatedTransports     int
+	ReusedTransports      int
+	CreatedSelections     int
+	ReusedSelections      int
+	WRRSlots              int
+	HashPoints            int
+	CreatedHealthTrackers int
+	ReusedHealthTrackers  int
+	CreatedRetryBudgets   int
+	ReusedRetryBudgets    int
+	Current               RegistryStats
 }
 
 type CleanupStats struct {
-	ReleasedEndpoints  int
-	ReleasedTransports int
-	ClosedTransports   int
-	Current            RegistryStats
+	ReleasedEndpoints      int
+	ReleasedTransports     int
+	ClosedTransports       int
+	ReleasedHealthTrackers int
+	ReleasedRetryBudgets   int
+	Current                RegistryStats
 }
 
 type Observer interface {
@@ -31,6 +37,8 @@ type RegistryStats struct {
 	LiveEndpoints       int
 	LiveTransports      int
 	LiveSelectionStates int
+	LiveHealthTrackers  int
+	LiveRetryBudgets    int
 	ActivePlanSets      int
 	RetiredPlanSets     int
 }

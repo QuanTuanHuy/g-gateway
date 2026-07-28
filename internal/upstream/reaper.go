@@ -57,6 +57,8 @@ func (r *Registry) reapNow() {
 		cleanup.ReleasedEndpoints += released.ReleasedEndpoints
 		cleanup.ReleasedTransports += released.ReleasedTransports
 		cleanup.ClosedTransports += released.ClosedTransports
+		cleanup.ReleasedHealthTrackers += released.ReleasedHealthTrackers
+		cleanup.ReleasedRetryBudgets += released.ReleasedRetryBudgets
 		transports = append(transports, closed...)
 		set.owned = resourceRefs{}
 	}

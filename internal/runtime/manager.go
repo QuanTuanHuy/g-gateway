@@ -162,6 +162,12 @@ func (m *Manager) UpstreamStats() upstream.RegistryStats {
 	return m.upstreams.Stats()
 }
 
+func (m *Manager) StopHealth() {
+	if m != nil && m.upstreams != nil {
+		m.upstreams.StopHealth()
+	}
+}
+
 func (m *Manager) Close(ctx context.Context) error {
 	if m == nil {
 		return nil

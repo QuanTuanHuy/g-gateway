@@ -44,7 +44,7 @@ func TestPhase3AAcceptance(t *testing.T) {
 		profile = fullPhase3AProfile
 	}
 	resources, checksum := generatePhase3AResources(t, profile)
-	registry, err := NewRegistry(64, nil)
+	registry, err := NewRegistry(RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}

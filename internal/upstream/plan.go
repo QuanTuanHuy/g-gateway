@@ -46,13 +46,37 @@ func (a *AttemptSet) Contains(ordinal uint32) bool {
 }
 
 type Plan struct {
-	id        string
-	algorithm model.BalancerType
-	endpoints []planEndpoint
-	transport *transportRuntime
-	wrr       wrrSelector
-	continuum continuum
-	hashKey   hashKeyExtractor
+	id                  string
+	algorithm           model.BalancerType
+	endpoints           []planEndpoint
+	transport           *transportRuntime
+	wrr                 wrrSelector
+	continuum           continuum
+	hashKey             hashKeyExtractor
+	healthRegistrations []*healthRegistration
+	budget              *retryBudget
+}
+
+func (p *Plan) ActivateHealth() {
+	if p == nil {
+		return
+	}
+	for _, registration := range p.healthRegistrations {
+		registration.ActivateHealth()
+	}
+}
+
+func (p *Plan) CreditPrimary() {
+	if p != nil && p.budget != nil {
+		p.budget.CreditPrimary()
+	}
+}
+
+func (p *Plan) AcquireRetry() (RetryPermit, bool) {
+	if p == nil || p.budget == nil {
+		return RetryPermit{}, false
+	}
+	return p.budget.Acquire()
 }
 
 func (p *Plan) Select(request *http.Request) (Selection, error) {
@@ -94,6 +118,7 @@ func (p *Plan) SelectNext(request *http.Request, attempted *AttemptSet) (Selecti
 	}
 	return Selection{
 		endpoint:     p.endpoints[ordinal].runtime,
+		health:       p.endpoints[ordinal].health,
 		transport:    p.transport,
 		ordinal:      ordinal,
 		balancer:     p.algorithm,
@@ -111,6 +136,7 @@ func (p *Plan) selectable(ordinal uint32, attempted *AttemptSet) bool {
 
 type Selection struct {
 	endpoint     *endpointRuntime
+	health       *EndpointHealth
 	transport    *transportRuntime
 	ordinal      uint32
 	balancer     model.BalancerType
@@ -152,6 +178,12 @@ func (s Selection) Balancer() model.BalancerType {
 
 func (s Selection) HashFallback() bool {
 	return s.hashFallback
+}
+
+func (s Selection) Observe(observation Observation) {
+	if s.health != nil {
+		s.health.Observe(observation)
+	}
 }
 
 type PlanSet struct {

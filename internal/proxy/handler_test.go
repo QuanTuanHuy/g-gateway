@@ -67,7 +67,7 @@ func newConsistentHashHandler(t *testing.T, headerName string) (http.Handler, st
 		}}},
 	}
 
-	upstreamRegistry, err := upstream.NewRegistry(64, nil)
+	upstreamRegistry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func newTestHandlerWithLogger(
 	upstreamServer := httptest.NewServer(roundTripperAdapter(transport))
 	t.Cleanup(upstreamServer.Close)
 	resources := testHandlerResources(upstreamServer.URL, methods)
-	upstreamRegistry, err := upstream.NewRegistry(64, nil)
+	upstreamRegistry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
