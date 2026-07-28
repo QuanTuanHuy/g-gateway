@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
@@ -127,9 +128,173 @@ func Normalize(resources []model.Upstream) ([]model.Upstream, error) {
 		if err := validateTransport(resource, upstreamField); err != nil {
 			return nil, err
 		}
+		if err := normalizeHealth(&resource, upstreamField+".health"); err != nil {
+			return nil, err
+		}
+		if err := normalizeRetry(&resource, upstreamField+".retry"); err != nil {
+			return nil, err
+		}
 		normalized[upstreamIndex] = resource
 	}
 	return normalized, nil
+}
+
+func normalizeHealth(resource *model.Upstream, field string) error {
+	policy := &resource.Health
+	if policy.Active == nil {
+		if policy.Passive != nil {
+			return configError("PASSIVE_HEALTH_REQUIRES_ACTIVE", field+".passive", resource.ID, nil)
+		}
+		return nil
+	}
+
+	active := policy.Active
+	if active.Timeout < 10*time.Millisecond || active.Timeout > 30*time.Second ||
+		active.HealthyInterval < 100*time.Millisecond || active.HealthyInterval > time.Hour ||
+		active.UnhealthyInterval < 100*time.Millisecond || active.UnhealthyInterval > time.Hour ||
+		!validThreshold(active.HealthySuccesses) ||
+		!validThreshold(active.TransportFailures) ||
+		!validThreshold(active.Timeouts) {
+		return configError("ACTIVE_HEALTH_INVALID", field+".active", resource.ID, fmt.Errorf("timeout, intervals, or thresholds are outside allowed bounds"))
+	}
+
+	switch active.Type {
+	case model.HealthCheckHTTP:
+		if !validThreshold(active.HTTPFailures) ||
+			len(active.HealthyStatuses) == 0 || len(active.UnhealthyStatuses) == 0 ||
+			active.Path == "" || !strings.HasPrefix(active.Path, "/") {
+			return configError("ACTIVE_HEALTH_INVALID", field+".active", resource.ID, fmt.Errorf("HTTP checker requires thresholds, statuses, and an absolute path"))
+		}
+		active.HealthyStatuses = normalizeStatuses(active.HealthyStatuses)
+		active.UnhealthyStatuses = normalizeStatuses(active.UnhealthyStatuses)
+		if statusesOverlap(active.HealthyStatuses, active.UnhealthyStatuses) {
+			return configError("ACTIVE_HEALTH_INVALID", field+".active", resource.ID, fmt.Errorf("healthy and unhealthy statuses must be disjoint"))
+		}
+	case model.HealthCheckTCP:
+		if active.HTTPFailures != 0 || active.Path != "" || active.Host != "" ||
+			len(active.HealthyStatuses) != 0 || len(active.UnhealthyStatuses) != 0 {
+			return configError("ACTIVE_HEALTH_INVALID", field+".active", resource.ID, fmt.Errorf("TCP checker does not accept HTTP fields"))
+		}
+	default:
+		return configError("ACTIVE_HEALTH_INVALID", field+".active.type", resource.ID, fmt.Errorf("unsupported type %q", active.Type))
+	}
+
+	if policy.Passive != nil {
+		passive := policy.Passive
+		if passive.HTTPFailures == 0 && passive.TransportFailures == 0 && passive.Timeouts == 0 {
+			return configError("PASSIVE_HEALTH_INVALID", field+".passive", resource.ID, fmt.Errorf("at least one threshold is required"))
+		}
+		if !validOptionalThreshold(passive.HTTPFailures) ||
+			!validOptionalThreshold(passive.TransportFailures) ||
+			!validOptionalThreshold(passive.Timeouts) {
+			return configError("PASSIVE_HEALTH_INVALID", field+".passive", resource.ID, fmt.Errorf("thresholds must be in 1..254 when enabled"))
+		}
+		passive.UnhealthyStatuses = normalizeStatuses(passive.UnhealthyStatuses)
+		if passive.HTTPFailures > 0 && len(passive.UnhealthyStatuses) == 0 {
+			return configError("PASSIVE_HEALTH_INVALID", field+".passive.unhealthy_statuses", resource.ID, fmt.Errorf("HTTP failures require statuses"))
+		}
+	}
+	return nil
+}
+
+func normalizeRetry(resource *model.Upstream, field string) error {
+	policy := &resource.Retry
+	if retryPolicyIsLegacy(*policy) {
+		*policy = model.RetryPolicy{MaxAttempts: 1}
+		return nil
+	}
+	if policy.MaxAttempts < 1 || policy.MaxAttempts > 5 ||
+		(policy.TotalTimeout != 0 && (policy.TotalTimeout < time.Millisecond || policy.TotalTimeout > 10*time.Minute)) ||
+		policy.Budget.RatioPer1000 > 1000 ||
+		policy.Budget.Burst < 1 || policy.Budget.Burst > 1000 ||
+		policy.Budget.MaxInflight < 1 || policy.Budget.MaxInflight > 1000 {
+		return configError("RETRY_POLICY_INVALID", field, resource.ID, fmt.Errorf("retry policy is outside allowed bounds"))
+	}
+	for i := range policy.Methods {
+		method := strings.ToUpper(policy.Methods[i])
+		if !validToken(method) {
+			return configError("RETRY_POLICY_INVALID", fmt.Sprintf("%s.methods[%d]", field, i), resource.ID, fmt.Errorf("invalid HTTP method"))
+		}
+		policy.Methods[i] = method
+	}
+	sort.Strings(policy.Methods)
+	policy.Methods = compactStrings(policy.Methods)
+	policy.RetryOn.Statuses = normalizeStatuses(policy.RetryOn.Statuses)
+	for i, status := range policy.RetryOn.Statuses {
+		if status != 408 && status != 425 && status != 429 && (status < 500 || status > 599) {
+			return configError("RETRY_STATUS_INVALID", fmt.Sprintf("%s.retry_on.statuses[%d]", field, i), resource.ID, fmt.Errorf("status %d is not retryable", status))
+		}
+	}
+	return nil
+}
+
+func retryPolicyIsLegacy(policy model.RetryPolicy) bool {
+	return (policy.MaxAttempts == 0 || policy.MaxAttempts == 1) &&
+		len(policy.Methods) == 0 &&
+		!policy.RetryOn.ConnectFailure &&
+		!policy.RetryOn.ConnectionFailure &&
+		!policy.RetryOn.ResponseHeaderTimeout &&
+		len(policy.RetryOn.Statuses) == 0 &&
+		policy.Budget == (model.RetryBudgetPolicy{}) && policy.TotalTimeout == 0
+}
+
+func validThreshold(value uint8) bool {
+	return value >= 1 && value <= 254
+}
+
+func validOptionalThreshold(value uint8) bool {
+	return value == 0 || validThreshold(value)
+}
+
+func normalizeStatuses(values []uint16) []uint16 {
+	if values == nil {
+		return nil
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	return compactUint16s(values)
+}
+
+func compactUint16s(values []uint16) []uint16 {
+	if len(values) < 2 {
+		return values
+	}
+	write := 1
+	for read := 1; read < len(values); read++ {
+		if values[read] != values[write-1] {
+			values[write] = values[read]
+			write++
+		}
+	}
+	return values[:write]
+}
+
+func compactStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	write := 1
+	for read := 1; read < len(values); read++ {
+		if values[read] != values[write-1] {
+			values[write] = values[read]
+			write++
+		}
+	}
+	return values[:write]
+}
+
+func statusesOverlap(left, right []uint16) bool {
+	i, j := 0, 0
+	for i < len(left) && j < len(right) {
+		if left[i] == right[j] {
+			return true
+		}
+		if left[i] < right[j] {
+			i++
+		} else {
+			j++
+		}
+	}
+	return false
 }
 
 func normalizeEndpoint(raw string) (string, error) {

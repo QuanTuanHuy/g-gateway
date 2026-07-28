@@ -303,6 +303,88 @@ func TestNormalizeRejectsInvalidHashSources(t *testing.T) {
 	}
 }
 
+func TestNormalizeRejectsInvalidHealthAndRetryPolicies(t *testing.T) {
+	tests := []struct {
+		name     string
+		change   func(*model.Upstream)
+		wantCode string
+	}{
+		{
+			name: "passive requires active",
+			change: func(up *model.Upstream) {
+				up.Health = model.HealthPolicy{
+					Passive: &model.PassiveHealthPolicy{HTTPFailures: 1},
+				}
+			},
+			wantCode: "PASSIVE_HEALTH_REQUIRES_ACTIVE",
+		},
+		{
+			name: "retry attempts capped",
+			change: func(up *model.Upstream) {
+				up.Retry.MaxAttempts = 6
+			},
+			wantCode: "RETRY_POLICY_INVALID",
+		},
+		{
+			name: "status outside retry allowlist",
+			change: func(up *model.Upstream) {
+				up.Retry.RetryOn.Statuses = []uint16{409}
+			},
+			wantCode: "RETRY_STATUS_INVALID",
+		},
+		{
+			name: "tcp rejects http fields",
+			change: func(up *model.Upstream) {
+				up.Health.Active.Type = model.HealthCheckTCP
+				up.Health.Active.Path = "/healthz"
+			},
+			wantCode: "ACTIVE_HEALTH_INVALID",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := validUpstreamWith(model.Endpoint{URL: "http://example.com", Weight: 1})
+			upstream.Health, upstream.Retry = validResiliencePolicies()
+			test.change(&upstream)
+			_, err := Normalize([]model.Upstream{upstream})
+			var configErr *ConfigError
+			if !errors.As(err, &configErr) || configErr.Code != test.wantCode {
+				t.Fatalf("error = %#v, want %s", err, test.wantCode)
+			}
+		})
+	}
+}
+
+func TestNormalizeCanonicalizesRetryMethodsAndStatuses(t *testing.T) {
+	upstream := validUpstreamWith(model.Endpoint{URL: "http://example.com", Weight: 1})
+	upstream.Health, upstream.Retry = validResiliencePolicies()
+	upstream.Retry.Methods = []string{"post", "GET", "get"}
+	upstream.Retry.RetryOn.Statuses = []uint16{503, 429, 503}
+	upstream.Health.Active.HealthyStatuses = []uint16{204, 200, 204}
+
+	got, err := Normalize([]model.Upstream{upstream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got[0].Retry.Methods) != "[GET POST]" ||
+		fmt.Sprint(got[0].Retry.RetryOn.Statuses) != "[429 503]" ||
+		fmt.Sprint(got[0].Health.Active.HealthyStatuses) != "[200 204]" {
+		t.Fatalf("normalized resilience = health:%+v retry:%+v", got[0].Health, got[0].Retry)
+	}
+}
+
+func TestNormalizeDefaultsZeroRetryPolicyToOneAttempt(t *testing.T) {
+	upstream := validUpstreamWith(model.Endpoint{URL: "http://example.com", Weight: 1})
+	got, err := Normalize([]model.Upstream{upstream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Retry.MaxAttempts != 1 || got[0].Retry.TotalTimeout != 0 {
+		t.Fatalf("legacy retry = %+v", got[0].Retry)
+	}
+}
+
 func assertConfigError(t *testing.T, err error, code, field string) {
 	t.Helper()
 	var configErr *ConfigError
@@ -335,4 +417,34 @@ func validTransportConfig() model.TransportConfig {
 		MaxIdleConnections:        100,
 		MaxIdleConnectionsPerHost: 10,
 	}
+}
+
+func validResiliencePolicies() (model.HealthPolicy, model.RetryPolicy) {
+	return model.HealthPolicy{
+			Active: &model.ActiveHealthPolicy{
+				Type:              model.HealthCheckHTTP,
+				Timeout:           time.Second,
+				HealthyInterval:   5 * time.Second,
+				UnhealthyInterval: 2 * time.Second,
+				HealthySuccesses:  2,
+				HTTPFailures:      3,
+				TransportFailures: 2,
+				Timeouts:          2,
+				HealthyStatuses:   []uint16{200, 204},
+				UnhealthyStatuses: []uint16{429, 500, 502, 503, 504},
+				Path:              "/",
+			},
+		},
+		model.RetryPolicy{
+			MaxAttempts: 3,
+			Methods:     []string{"GET", "HEAD"},
+			RetryOn: model.RetryOnPolicy{
+				ConnectFailure:        true,
+				ConnectionFailure:     true,
+				ResponseHeaderTimeout: true,
+				Statuses:              []uint16{429, 503},
+			},
+			Budget:       model.RetryBudgetPolicy{RatioPer1000: 100, Burst: 10, MaxInflight: 32},
+			TotalTimeout: 30 * time.Second,
+		}
 }
