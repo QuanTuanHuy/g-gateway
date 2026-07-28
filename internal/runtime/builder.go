@@ -44,6 +44,10 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 	for _, service := range resources.Services {
 		services[service.ID] = service
 	}
+	upstreams := make(map[string]model.Upstream, len(resources.Upstreams))
+	for _, resource := range resources.Upstreams {
+		upstreams[resource.ID] = resource
+	}
 	routes := make([]CompiledRoute, 0, len(resources.Routes))
 	specs := make([]router.RouteSpec, 0, len(resources.Routes))
 	pluginCount := 0
@@ -93,6 +97,7 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 			upstreamMeta: &requestctx.UpstreamMeta{ID: upstreamID},
 			plan:         upstreamPlan,
 			plugins:      chain,
+			retry:        effectiveRetryPolicy(upstreams[upstreamID].Retry, route.Resilience),
 		})
 		specs = append(specs, router.RouteSpec{
 			Index:    routeIndex,
@@ -124,4 +129,26 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 			PluginCount:   pluginCount,
 		},
 	}, nil
+}
+
+func effectiveRetryPolicy(base model.RetryPolicy, override model.RouteResiliencePolicy) model.RetryPolicy {
+	if base.MaxAttempts == 0 {
+		base.MaxAttempts = 1
+	}
+	base.Methods = append([]string(nil), base.Methods...)
+	base.RetryOn.Statuses = append([]uint16(nil), base.RetryOn.Statuses...)
+	if override.TotalTimeout != nil {
+		base.TotalTimeout = *override.TotalTimeout
+	}
+	if override.MaxAttempts != nil {
+		base.MaxAttempts = *override.MaxAttempts
+	}
+	if override.Methods != nil {
+		base.Methods = append([]string{}, (*override.Methods)...)
+	}
+	if override.RetryOn != nil {
+		base.RetryOn = *override.RetryOn
+		base.RetryOn.Statuses = append([]uint16(nil), override.RetryOn.Statuses...)
+	}
+	return base
 }

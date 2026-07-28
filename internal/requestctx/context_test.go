@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
@@ -96,7 +97,13 @@ func (s testSnapshot) Revision() uint64 {
 
 type testRuntimeRoute struct{}
 
-func (r *testRuntimeRoute) Select(*http.Request) (upstream.Selection, error) {
+func (r *testRuntimeRoute) RetryPolicy() model.RetryPolicy { return model.RetryPolicy{} }
+func (r *testRuntimeRoute) ActivateUpstream()              {}
+func (r *testRuntimeRoute) CreditPrimary()                 {}
+func (r *testRuntimeRoute) AcquireRetry() (upstream.RetryPermit, bool) {
+	return upstream.RetryPermit{}, false
+}
+func (r *testRuntimeRoute) SelectNext(*http.Request, *upstream.AttemptSet) (upstream.Selection, error) {
 	return upstream.Selection{}, nil
 }
 

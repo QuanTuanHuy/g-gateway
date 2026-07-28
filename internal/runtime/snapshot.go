@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	"github.com/QuanTuanHuy/g-gateway/internal/router"
@@ -25,6 +26,7 @@ type CompiledRoute struct {
 	upstreamMeta *requestctx.UpstreamMeta
 	plan         *upstream.Plan
 	plugins      *plugin.Chain
+	retry        model.RetryPolicy
 }
 
 type Snapshot struct {
@@ -91,6 +93,22 @@ func (r *CompiledRoute) RunResponse(state *requestctx.Context, response *http.Re
 	return r.plugins.RunResponse(state, response)
 }
 
-func (r *CompiledRoute) Select(request *http.Request) (upstream.Selection, error) {
-	return r.plan.Select(request)
+func (r *CompiledRoute) RetryPolicy() model.RetryPolicy {
+	return r.retry
+}
+
+func (r *CompiledRoute) ActivateUpstream() {
+	r.plan.ActivateHealth()
+}
+
+func (r *CompiledRoute) CreditPrimary() {
+	r.plan.CreditPrimary()
+}
+
+func (r *CompiledRoute) AcquireRetry() (upstream.RetryPermit, bool) {
+	return r.plan.AcquireRetry()
+}
+
+func (r *CompiledRoute) SelectNext(request *http.Request, attempted *upstream.AttemptSet) (upstream.Selection, error) {
+	return r.plan.SelectNext(request, attempted)
 }

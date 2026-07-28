@@ -180,7 +180,7 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	selection, err := state.Runtime.Select(request)
+	selection, err := state.Runtime.SelectNext(request, nil)
 	if err != nil {
 		h.writeMatchedResponse(
 			writer,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
@@ -30,25 +31,32 @@ type SnapshotRef interface {
 }
 
 type RuntimeRoute interface {
-	Select(*http.Request) (upstream.Selection, error)
+	RetryPolicy() model.RetryPolicy
+	ActivateUpstream()
+	CreditPrimary()
+	AcquireRetry() (upstream.RetryPermit, bool)
+	SelectNext(*http.Request, *upstream.AttemptSet) (upstream.Selection, error)
 	RunResponse(*Context, *http.Response) error
 }
 
 type Context struct {
-	Snapshot      SnapshotRef
-	Runtime       RuntimeRoute
-	Revision      uint64
-	Route         *RouteMeta
-	Service       *ServiceMeta
-	Upstream      *UpstreamMeta
-	Selection     upstream.Selection
-	Attempt       int
-	RequestID     string
-	Path          string
-	Params        []ParamSpan
-	Scratch       []any
-	ResponseCode  int
-	ResponseError string
+	Snapshot        SnapshotRef
+	Runtime         RuntimeRoute
+	Revision        uint64
+	Route           *RouteMeta
+	Service         *ServiceMeta
+	Upstream        *UpstreamMeta
+	Selection       upstream.Selection
+	Attempt         int
+	Attempts        int
+	RetrySuppressed string
+	UpstreamOutcome string
+	RequestID       string
+	Path            string
+	Params          []ParamSpan
+	Scratch         []any
+	ResponseCode    int
+	ResponseError   string
 }
 
 type contextKey struct{}
