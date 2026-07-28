@@ -8,6 +8,7 @@ import (
 type PredicateOperator string
 type BalancerType string
 type HashSourceType string
+type HealthCheckType string
 
 const (
 	PredicateExists    PredicateOperator = "exists"
@@ -23,6 +24,9 @@ const (
 	HashSourceCookie     HashSourceType = "cookie"
 	HashSourceRemoteAddr HashSourceType = "remote_addr"
 	HashSourceLiteral    HashSourceType = "literal"
+
+	HealthCheckHTTP HealthCheckType = "http"
+	HealthCheckTCP  HealthCheckType = "tcp"
 )
 
 type ResourceSet struct {
@@ -38,6 +42,7 @@ type Route struct {
 	ServiceRef  string
 	UpstreamRef string
 	Plugins     []PluginAttachment
+	Resilience  RouteResiliencePolicy
 }
 
 type RouteMatch struct {
@@ -71,6 +76,63 @@ type Upstream struct {
 	Endpoints []Endpoint
 	Balancer  BalancerPolicy
 	Transport TransportConfig
+	Health    HealthPolicy
+	Retry     RetryPolicy
+}
+
+type HealthPolicy struct {
+	Active  *ActiveHealthPolicy
+	Passive *PassiveHealthPolicy
+}
+
+type ActiveHealthPolicy struct {
+	Type              HealthCheckType
+	Timeout           time.Duration
+	HealthyInterval   time.Duration
+	UnhealthyInterval time.Duration
+	HealthySuccesses  uint8
+	HTTPFailures      uint8
+	TransportFailures uint8
+	Timeouts          uint8
+	HealthyStatuses   []uint16
+	UnhealthyStatuses []uint16
+	Path              string
+	Host              string
+}
+
+type PassiveHealthPolicy struct {
+	HTTPFailures      uint8
+	TransportFailures uint8
+	Timeouts          uint8
+	UnhealthyStatuses []uint16
+}
+
+type RetryOnPolicy struct {
+	ConnectFailure        bool
+	ConnectionFailure     bool
+	ResponseHeaderTimeout bool
+	Statuses              []uint16
+}
+
+type RetryBudgetPolicy struct {
+	RatioPer1000 uint16
+	Burst        uint16
+	MaxInflight  uint16
+}
+
+type RetryPolicy struct {
+	MaxAttempts  uint8
+	Methods      []string
+	RetryOn      RetryOnPolicy
+	Budget       RetryBudgetPolicy
+	TotalTimeout time.Duration
+}
+
+type RouteResiliencePolicy struct {
+	TotalTimeout *time.Duration
+	MaxAttempts  *uint8
+	Methods      *[]string
+	RetryOn      *RetryOnPolicy
 }
 
 type Endpoint struct {
@@ -112,6 +174,7 @@ func CloneResourceSet(in ResourceSet) ResourceSet {
 		out.Routes[i] = in.Routes[i]
 		out.Routes[i].Match = cloneRouteMatch(in.Routes[i].Match)
 		out.Routes[i].Plugins = clonePluginAttachments(in.Routes[i].Plugins)
+		out.Routes[i].Resilience = cloneRouteResiliencePolicy(in.Routes[i].Resilience)
 	}
 	for i := range in.Services {
 		out.Services[i] = in.Services[i]
@@ -124,9 +187,75 @@ func CloneResourceSet(in ResourceSet) ResourceSet {
 			[]HashKeySource(nil),
 			in.Upstreams[i].Balancer.HashKey.Sources...,
 		)
+		out.Upstreams[i].Health = cloneHealthPolicy(in.Upstreams[i].Health)
+		out.Upstreams[i].Retry = cloneRetryPolicy(in.Upstreams[i].Retry)
 	}
 
 	return out
+}
+
+func cloneRouteResiliencePolicy(in RouteResiliencePolicy) RouteResiliencePolicy {
+	out := in
+	if in.TotalTimeout != nil {
+		value := *in.TotalTimeout
+		out.TotalTimeout = &value
+	}
+	if in.MaxAttempts != nil {
+		value := *in.MaxAttempts
+		out.MaxAttempts = &value
+	}
+	if in.Methods != nil {
+		value := cloneStrings(*in.Methods)
+		out.Methods = &value
+	}
+	if in.RetryOn != nil {
+		value := cloneRetryOnPolicy(*in.RetryOn)
+		out.RetryOn = &value
+	}
+	return out
+}
+
+func cloneHealthPolicy(in HealthPolicy) HealthPolicy {
+	out := in
+	if in.Active != nil {
+		value := *in.Active
+		value.HealthyStatuses = cloneUint16s(in.Active.HealthyStatuses)
+		value.UnhealthyStatuses = cloneUint16s(in.Active.UnhealthyStatuses)
+		out.Active = &value
+	}
+	if in.Passive != nil {
+		value := *in.Passive
+		value.UnhealthyStatuses = cloneUint16s(in.Passive.UnhealthyStatuses)
+		out.Passive = &value
+	}
+	return out
+}
+
+func cloneRetryPolicy(in RetryPolicy) RetryPolicy {
+	out := in
+	out.Methods = cloneStrings(in.Methods)
+	out.RetryOn = cloneRetryOnPolicy(in.RetryOn)
+	return out
+}
+
+func cloneRetryOnPolicy(in RetryOnPolicy) RetryOnPolicy {
+	out := in
+	out.Statuses = cloneUint16s(in.Statuses)
+	return out
+}
+
+func cloneUint16s(in []uint16) []uint16 {
+	if in == nil {
+		return nil
+	}
+	return append([]uint16{}, in...)
+}
+
+func cloneStrings(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	return append([]string{}, in...)
 }
 
 func cloneRouteMatch(in RouteMatch) RouteMatch {
