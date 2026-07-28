@@ -109,6 +109,21 @@ func TestRegistryHealthPolicyChangeKeepsTransportButResetsHealth(t *testing.T) {
 	}
 }
 
+func TestRegistryRollbackReleasesResilienceRuntimes(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	resource := testUpstream("users", testEndpoint("http://users-a:8080", 1))
+	resource.Health, resource.Retry = validResiliencePolicies()
+	candidate := mustPrepare(t, registry, []model.Upstream{resource})
+	candidate.Rollback()
+	stats := registry.Stats()
+	if stats.LiveHealthTrackers != 0 ||
+		stats.LiveRetryBudgets != 0 ||
+		stats.LiveEndpoints != 0 ||
+		stats.LiveTransports != 0 {
+		t.Fatalf("registry stats after rollback = %+v", stats)
+	}
+}
+
 func TestRegistryTransportOnlyChangeReusesEndpoints(t *testing.T) {
 	registry := mustRegistry(t, 64, nil)
 	resource := testUpstream("users", testEndpoint("http://users-a:8080", 1))

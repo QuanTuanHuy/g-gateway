@@ -270,6 +270,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 
 func (g *Gateway) shutdown(ctx context.Context) error {
 	g.telemetry.SetReady(false)
+	g.manager.StopHealth()
 
 	trafficErrors := make(chan error, 2)
 	go func() { trafficErrors <- g.httpServer.Shutdown(ctx) }()
