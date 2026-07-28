@@ -176,6 +176,13 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	policy := state.Runtime.RetryPolicy()
+	if policy.TotalTimeout > 0 {
+		ctx, cancel := context.WithTimeout(request.Context(), policy.TotalTimeout)
+		defer cancel()
+		request = request.WithContext(ctx)
+	}
+
 	if request.Body != nil {
 		request.Body = http.MaxBytesReader(writer, request.Body, h.maxRequestBodyBytes)
 	}
@@ -184,7 +191,7 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *handler) handleProxyError(writer http.ResponseWriter, request *http.Request, err error) {
-	if request.Context().Err() != nil {
+	if errors.Is(request.Context().Err(), context.Canceled) {
 		return
 	}
 	state, matched := requestctx.From(request.Context())

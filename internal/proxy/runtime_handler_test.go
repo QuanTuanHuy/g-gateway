@@ -120,6 +120,68 @@ func TestRuntimeHandlerMapsRoutingErrors(t *testing.T) {
 	}
 }
 
+func TestRuntimeHandlerEnforcesTotalDeadlineAfterMatch(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamServer.Close()
+	resources := runtimeProxyResources(upstreamServer.URL, upstreamServer.URL)
+	resources.Upstreams[0].Retry = model.RetryPolicy{
+		MaxAttempts:  1,
+		Budget:       model.RetryBudgetPolicy{Burst: 10, MaxInflight: 32},
+		TotalTimeout: 20 * time.Millisecond,
+	}
+	handler, _, _ := newRuntimeTestHandler(t, resources, true)
+	response := httptest.NewRecorder()
+	started := time.Now()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway/users/42?tenant=acme", nil))
+	if response.Code != http.StatusGatewayTimeout || !strings.Contains(response.Body.String(), "UPSTREAM_TIMEOUT") {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	if time.Since(started) > 250*time.Millisecond {
+		t.Fatal("total deadline was not enforced")
+	}
+}
+
+func TestRuntimeHandlerEarlierClientDeadlineWins(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamServer.Close()
+	resources := runtimeProxyResources(upstreamServer.URL, upstreamServer.URL)
+	resources.Upstreams[0].Retry = model.RetryPolicy{
+		MaxAttempts:  1,
+		Budget:       model.RetryBudgetPolicy{Burst: 10, MaxInflight: 32},
+		TotalTimeout: time.Second,
+	}
+	handler, _, _ := newRuntimeTestHandler(t, resources, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, "http://gateway/users/42?tenant=acme", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusGatewayTimeout {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRuntimeHandlerLegacyPolicyHasNoTotalDeadline(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		time.Sleep(30 * time.Millisecond)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamServer.Close()
+	resources := runtimeProxyResources(upstreamServer.URL, upstreamServer.URL)
+	handler, _, _ := newRuntimeTestHandler(t, resources, true)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway/users/42?tenant=acme", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func newRuntimeTestHandler(
 	t *testing.T,
 	resources model.ResourceSet,
