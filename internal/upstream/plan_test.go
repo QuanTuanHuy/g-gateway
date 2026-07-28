@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -113,5 +114,72 @@ func TestPlanContainsNoRegistryLookupCallback(t *testing.T) {
 		if field.Type.Kind() == reflect.Func {
 			t.Fatalf("plan field %q is a request-time callback", field.Name)
 		}
+	}
+}
+
+func TestPlanSelectNextSkipsUnhealthyAndAttemptedEndpoints(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	candidate := mustPrepare(t, registry, []model.Upstream{
+		testUpstream("users",
+			testEndpoint("http://users-a:8080", 1),
+			testEndpoint("http://users-b:8080", 1),
+			testEndpoint("http://users-c:8080", 1),
+		),
+	})
+	defer candidate.Rollback()
+	plan, _ := candidate.Plan("users")
+	for index := range plan.endpoints {
+		plan.endpoints[index].health = newEndpointHealth(plan.endpoints[index].identity, thresholdTwoHealthPolicy(), 1)
+	}
+	plan.endpoints[0].health.Observe(Observation{Source: SourceActive, Kind: OutcomeTransportFailure})
+	plan.endpoints[0].health.Observe(Observation{Source: SourceActive, Kind: OutcomeTransportFailure})
+
+	var attempted AttemptSet
+	if !attempted.Add(1) {
+		t.Fatal("could not add untried ordinal")
+	}
+	selection, err := plan.SelectNext(httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil), &attempted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Ordinal() != 2 {
+		t.Fatalf("ordinal = %d, want 2", selection.Ordinal())
+	}
+}
+
+func TestPlanSelectNextFailsClosedWhenAllEndpointsUnhealthy(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	candidate := mustPrepare(t, registry, []model.Upstream{
+		testUpstream("users",
+			testEndpoint("http://users-a:8080", 1),
+			testEndpoint("http://users-b:8080", 1),
+		),
+	})
+	defer candidate.Rollback()
+	plan, _ := candidate.Plan("users")
+	for index := range plan.endpoints {
+		health := newEndpointHealth(plan.endpoints[index].identity, thresholdTwoHealthPolicy(), 1)
+		health.Observe(Observation{Source: SourceActive, Kind: OutcomeTimeout})
+		health.Observe(Observation{Source: SourceActive, Kind: OutcomeTimeout})
+		plan.endpoints[index].health = health
+	}
+
+	if _, err := plan.SelectNext(httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil), nil); !errors.Is(err, ErrNoHealthyEndpoint) {
+		t.Fatalf("error = %v, want ErrNoHealthyEndpoint", err)
+	}
+}
+
+func TestAttemptSetIsBoundedAndRejectsDuplicates(t *testing.T) {
+	var attempted AttemptSet
+	for ordinal := uint32(0); ordinal < 5; ordinal++ {
+		if !attempted.Add(ordinal) || !attempted.Contains(ordinal) {
+			t.Fatalf("ordinal %d was not stored", ordinal)
+		}
+	}
+	if attempted.Add(4) {
+		t.Fatal("duplicate ordinal was added")
+	}
+	if attempted.Add(5) {
+		t.Fatal("sixth ordinal exceeded fixed capacity")
 	}
 }

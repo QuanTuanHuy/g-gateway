@@ -10,11 +10,39 @@ import (
 )
 
 var ErrNoEndpoint = errors.New("upstream plan has no selectable endpoint")
+var ErrNoHealthyEndpoint = errors.New("upstream plan has no healthy untried endpoint")
 
 type planEndpoint struct {
 	runtime  *endpointRuntime
+	health   *EndpointHealth
 	identity string
 	weight   uint32
+}
+
+type AttemptSet struct {
+	ordinals [5]uint32
+	count    uint8
+}
+
+func (a *AttemptSet) Add(ordinal uint32) bool {
+	if a == nil || a.Contains(ordinal) || a.count >= uint8(len(a.ordinals)) {
+		return false
+	}
+	a.ordinals[a.count] = ordinal
+	a.count++
+	return true
+}
+
+func (a *AttemptSet) Contains(ordinal uint32) bool {
+	if a == nil {
+		return false
+	}
+	for index := uint8(0); index < a.count; index++ {
+		if a.ordinals[index] == ordinal {
+			return true
+		}
+	}
+	return false
 }
 
 type Plan struct {
@@ -28,6 +56,10 @@ type Plan struct {
 }
 
 func (p *Plan) Select(request *http.Request) (Selection, error) {
+	return p.SelectNext(request, nil)
+}
+
+func (p *Plan) SelectNext(request *http.Request, attempted *AttemptSet) (Selection, error) {
 	if p == nil || len(p.endpoints) == 0 || p.transport == nil {
 		return Selection{}, ErrNoEndpoint
 	}
@@ -37,10 +69,22 @@ func (p *Plan) Select(request *http.Request) (Selection, error) {
 	)
 	switch p.algorithm {
 	case model.BalancerWeightedRoundRobin:
-		ordinal = p.wrr.selectIndex()
+		var ok bool
+		ordinal, ok = p.wrr.selectNext(func(candidate uint32) bool {
+			return p.selectable(candidate, attempted)
+		})
+		if !ok {
+			return Selection{}, ErrNoHealthyEndpoint
+		}
 	case model.BalancerConsistentHash:
 		sum, usedFallback := p.hashKey.sum64(request)
-		ordinal = p.continuum.selectIndex(sum)
+		var ok bool
+		ordinal, ok = p.continuum.selectNext(sum, len(p.endpoints), func(candidate uint32) bool {
+			return p.selectable(candidate, attempted)
+		})
+		if !ok {
+			return Selection{}, ErrNoHealthyEndpoint
+		}
 		fallback = usedFallback
 	default:
 		return Selection{}, ErrNoEndpoint
@@ -55,6 +99,14 @@ func (p *Plan) Select(request *http.Request) (Selection, error) {
 		balancer:     p.algorithm,
 		hashFallback: fallback,
 	}, nil
+}
+
+func (p *Plan) selectable(ordinal uint32, attempted *AttemptSet) bool {
+	if ordinal >= uint32(len(p.endpoints)) || attempted.Contains(ordinal) {
+		return false
+	}
+	health := p.endpoints[ordinal].health
+	return health == nil || health.Selectable()
 }
 
 type Selection struct {

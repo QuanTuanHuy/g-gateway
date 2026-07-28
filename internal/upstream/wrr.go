@@ -92,6 +92,20 @@ func (s *wrrSelector) selectIndex() uint32 {
 	return s.schedule[next%uint64(len(s.schedule))]
 }
 
+func (s *wrrSelector) selectNext(selectable func(uint32) bool) (uint32, bool) {
+	if len(s.schedule) == 0 {
+		return s.direct, selectable(s.direct)
+	}
+	start := s.state.sequence.Add(1) - 1
+	for offset := uint64(0); offset < uint64(len(s.schedule)); offset++ {
+		ordinal := s.schedule[(start+offset)%uint64(len(s.schedule))]
+		if selectable(ordinal) {
+			return ordinal, true
+		}
+	}
+	return 0, false
+}
+
 type wrrSlot struct {
 	index     uint32
 	identity  string

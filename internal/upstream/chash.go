@@ -29,6 +29,40 @@ func (c *continuum) selectIndex(sum uint64) uint32 {
 	return c.indexes[index]
 }
 
+func (c *continuum) selectNext(sum uint64, endpointCount int, selectable func(uint32) bool) (uint32, bool) {
+	if len(c.hashes) == 0 {
+		return c.direct, selectable(c.direct)
+	}
+	start := sort.Search(len(c.hashes), func(i int) bool {
+		return c.hashes[i] >= sum
+	})
+	if start == len(c.hashes) {
+		start = 0
+	}
+	first := c.indexes[start]
+	if selectable(first) {
+		return first, true
+	}
+
+	seen := make([]bool, endpointCount)
+	if int(first) < len(seen) {
+		seen[first] = true
+	}
+	distinct := 1
+	for offset := 1; offset < len(c.hashes) && distinct < endpointCount; offset++ {
+		ordinal := c.indexes[(start+offset)%len(c.hashes)]
+		if int(ordinal) >= len(seen) || seen[ordinal] {
+			continue
+		}
+		seen[ordinal] = true
+		distinct++
+		if selectable(ordinal) {
+			return ordinal, true
+		}
+	}
+	return 0, false
+}
+
 type continuumEndpoint struct {
 	index     uint32
 	identity  string
