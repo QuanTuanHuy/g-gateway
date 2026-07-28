@@ -19,6 +19,7 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	"github.com/QuanTuanHuy/g-gateway/internal/router"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
+	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
 type RuntimeOptions struct {
@@ -65,11 +66,6 @@ func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 	handler.proxy = &httputil.ReverseProxy{
 		Transport: routeTransport{},
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
-			state, ok := requestctx.From(proxyRequest.Out.Context())
-			if !ok || !state.Selection.Valid() {
-				return
-			}
-			proxyRequest.SetURL(state.Selection.Target())
 			proxyRequest.Out.Host = proxyRequest.In.Host
 			removeHopByHopHeaders(proxyRequest.Out.Header)
 			rebuildForwardingHeaders(proxyRequest.Out.Header, proxyRequest.In)
@@ -180,22 +176,6 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	selection, err := state.Runtime.SelectNext(request, nil)
-	if err != nil {
-		h.writeMatchedResponse(
-			writer,
-			request,
-			state,
-			http.StatusServiceUnavailable,
-			"UPSTREAM_UNAVAILABLE",
-			"upstream unavailable",
-			nil,
-		)
-		return
-	}
-	state.Selection = selection
-	state.Attempt = 1
-
 	if request.Body != nil {
 		request.Body = http.MaxBytesReader(writer, request.Body, h.maxRequestBodyBytes)
 	}
@@ -238,7 +218,11 @@ func (h *handler) handleProxyError(writer http.ResponseWriter, request *http.Req
 	status := http.StatusBadGateway
 	code := "UPSTREAM_CONNECTION_FAILED"
 	message := "upstream connection failed"
-	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netError) && netError.Timeout() {
+	if errors.Is(err, upstream.ErrNoHealthyEndpoint) {
+		status = http.StatusServiceUnavailable
+		code = "UPSTREAM_UNHEALTHY"
+		message = "upstream unhealthy"
+	} else if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netError) && netError.Timeout() {
 		status = http.StatusGatewayTimeout
 		code = "UPSTREAM_TIMEOUT"
 		message = "upstream timeout"
