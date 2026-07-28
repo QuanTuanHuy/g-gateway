@@ -98,6 +98,10 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 		defer cancel()
 		_ = upstreamRegistry.Close(ctx)
 	}
+	if err := telemetryRuntime.RegisterResilienceProvider(upstreamRegistry); err != nil {
+		closeRegistry()
+		return nil, fmt.Errorf("register resilience telemetry: %w", err)
+	}
 	builder, err := gatewayruntime.NewBuilder(pluginRegistry)
 	if err != nil {
 		closeRegistry()

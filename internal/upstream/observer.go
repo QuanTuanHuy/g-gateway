@@ -42,3 +42,12 @@ type RegistryStats struct {
 	ActivePlanSets      int
 	RetiredPlanSets     int
 }
+
+type ResilienceStats struct {
+	UpstreamID         string
+	UnknownEndpoints   int
+	HealthyEndpoints   int
+	UnhealthyEndpoints int
+	RetryInflight      uint32
+	RetryBudgetTokens  float64
+}

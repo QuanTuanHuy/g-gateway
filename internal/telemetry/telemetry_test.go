@@ -339,6 +339,52 @@ func TestBalancerAndHashFallbackMetricsUseOnlyBoundedLabels(t *testing.T) {
 	}
 }
 
+func TestResilienceMetricsUseOnlyBoundedLabels(t *testing.T) {
+	telemetry, err := New(false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := upstream.NewRegistry(upstream.RegistryOptions{
+		MaxRetiredSnapshots: 64,
+		HealthWorkers:       1,
+		HealthQueueCapacity: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = registry.Close(ctx)
+	})
+	if err := telemetry.RegisterResilienceProvider(registry); err != nil {
+		t.Fatal(err)
+	}
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	for _, family := range []string{
+		"gateway_upstream_health_endpoints",
+		"gateway_upstream_health_transitions_total",
+		"gateway_upstream_health_probes_total",
+		"gateway_upstream_health_probe_duration_seconds",
+		"gateway_upstream_health_scheduler_queue",
+		"gateway_upstream_health_scheduler_reschedules_total",
+		"gateway_upstream_attempts_total",
+		"gateway_upstream_retries_total",
+		"gateway_upstream_retry_suppressed_total",
+		"gateway_upstream_retry_inflight",
+		"gateway_upstream_retry_budget_tokens",
+	} {
+		if !strings.Contains(body, family) {
+			t.Fatalf("metrics do not contain %q:\n%s", family, body)
+		}
+	}
+	for _, forbidden := range []string{"http://", "route_id=", "client_address=", "raw_error="} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("resilience metrics contain forbidden label %q", forbidden)
+		}
+	}
+}
+
 func TestPprofIsExplicitlyGated(t *testing.T) {
 	disabled, err := New(false, false)
 	if err != nil {

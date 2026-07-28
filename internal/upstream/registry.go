@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -315,6 +317,53 @@ func (r *Registry) Stats() RegistryStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.statsLocked()
+}
+
+func (r *Registry) ResilienceStats() []ResilienceStats {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	byUpstream := make(map[string]*ResilienceStats)
+	get := func(upstreamID string) *ResilienceStats {
+		stats := byUpstream[upstreamID]
+		if stats == nil {
+			stats = &ResilienceStats{UpstreamID: upstreamID}
+			byUpstream[upstreamID] = stats
+		}
+		return stats
+	}
+	for key, entry := range r.health {
+		upstreamID := key.endpointIdentity
+		if separator := strings.IndexByte(upstreamID, 0); separator >= 0 {
+			upstreamID = upstreamID[:separator]
+		}
+		stats := get(upstreamID)
+		switch entry.runtime.State() {
+		case HealthHealthy:
+			stats.HealthyEndpoints++
+		case HealthUnhealthy:
+			stats.UnhealthyEndpoints++
+		default:
+			stats.UnknownEndpoints++
+		}
+	}
+	for key, entry := range r.budgets {
+		stats := get(key.upstreamID)
+		stats.RetryInflight += entry.runtime.Inflight()
+		stats.RetryBudgetTokens += float64(entry.runtime.Credits()) / float64(retryCreditUnit)
+	}
+	result := make([]ResilienceStats, 0, len(byUpstream))
+	for _, stats := range byUpstream {
+		result = append(result, *stats)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].UpstreamID < result[j].UpstreamID })
+	return result
+}
+
+func (r *Registry) HealthCoordinatorStats() HealthCoordinatorStats {
+	if r == nil || r.coordinator == nil {
+		return HealthCoordinatorStats{}
+	}
+	return r.coordinator.Stats()
 }
 
 func (r *Registry) statsLocked() RegistryStats {
