@@ -97,6 +97,7 @@ func convertV3(wire documentV3) (BootstrapConfig, model.ResourceSet, error) {
 				},
 			},
 			Transport: transport,
+			Retry:     model.RetryPolicy{MaxAttempts: 1},
 		})
 	}
 	return bootstrap, resources, nil

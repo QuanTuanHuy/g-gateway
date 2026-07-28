@@ -2,7 +2,11 @@ package config
 
 import "time"
 
-const DefaultMaxRetiredSnapshots = 64
+const (
+	DefaultMaxRetiredSnapshots = 64
+	DefaultHealthWorkers       = 16
+	DefaultHealthQueueCapacity = 4096
+)
 
 type BootstrapConfig struct {
 	HTTP      ListenerConfig
@@ -15,6 +19,12 @@ type BootstrapConfig struct {
 
 type RuntimeConfig struct {
 	MaxRetiredSnapshots int
+	Health              HealthRuntimeConfig
+}
+
+type HealthRuntimeConfig struct {
+	Workers            int
+	ReadyQueueCapacity int
 }
 
 type ListenerConfig struct {

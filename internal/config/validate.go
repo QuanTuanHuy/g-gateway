@@ -16,6 +16,7 @@ const (
 	apiVersionV1Alpha1 = "gateway/v1alpha1"
 	apiVersionV1Alpha2 = "gateway/v1alpha2"
 	apiVersionV1Alpha3 = "gateway/v1alpha3"
+	apiVersionV1Alpha4 = "gateway/v1alpha4"
 )
 
 func validateV1(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
@@ -41,6 +42,19 @@ func validateV1(version string, bootstrap *BootstrapConfig, resources *model.Res
 		return err
 	}
 	return nil
+}
+
+func validateV4(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha4 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha4)
+	}
+	if got := bootstrap.Runtime.Health.Workers; got < 1 || got > 256 {
+		return fmt.Errorf("runtime.health.workers: must be between 1 and 256")
+	}
+	if got := bootstrap.Runtime.Health.ReadyQueueCapacity; got < 1 || got > 65536 {
+		return fmt.Errorf("runtime.health.ready_queue_capacity: must be between 1 and 65536")
+	}
+	return validateV3(apiVersionV1Alpha3, bootstrap, resources)
 }
 
 func validateV2(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {

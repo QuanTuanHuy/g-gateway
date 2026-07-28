@@ -35,6 +35,74 @@ func TestDecodeValidV1Alpha3(t *testing.T) {
 	}
 }
 
+func TestDecodeValidV1Alpha4ResilienceDefaultsAndOverrides(t *testing.T) {
+	document := strings.Replace(validV3Document(t), "gateway/v1alpha3", "gateway/v1alpha4", 1)
+	document = strings.Replace(document,
+		"  max_retired_snapshots: 64",
+		"  max_retired_snapshots: 64\n  health:\n    workers: 8\n    ready_queue_capacity: 512",
+		1,
+	)
+	document = strings.Replace(document,
+		"    upstream_ref: baseline",
+		"    upstream_ref: baseline\n    resilience:\n      max_attempts: 3",
+		1,
+	)
+	document = strings.Replace(document,
+		"    transport:\n",
+		"    health:\n      active: {}\n      passive: {}\n    retry: {}\n    transport:\n",
+		1,
+	)
+
+	bootstrap, resources, err := Decode(strings.NewReader(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.Runtime.Health.Workers != 8 ||
+		bootstrap.Runtime.Health.ReadyQueueCapacity != 512 {
+		t.Fatalf("health runtime = %+v", bootstrap.Runtime.Health)
+	}
+	if resources.Upstreams[0].Retry.TotalTimeout != 30*time.Second {
+		t.Fatalf("total timeout = %s", resources.Upstreams[0].Retry.TotalTimeout)
+	}
+	if resources.Upstreams[0].Health.Active == nil ||
+		resources.Upstreams[0].Health.Active.Type != model.HealthCheckHTTP {
+		t.Fatalf("active health = %+v", resources.Upstreams[0].Health.Active)
+	}
+	if resources.Routes[0].Resilience.MaxAttempts == nil ||
+		*resources.Routes[0].Resilience.MaxAttempts != 3 {
+		t.Fatalf("route resilience = %+v", resources.Routes[0].Resilience)
+	}
+}
+
+func TestDecodeV1Alpha4RejectsUnknownResilienceField(t *testing.T) {
+	document := strings.Replace(validV3Document(t), "gateway/v1alpha3", "gateway/v1alpha4", 1)
+	document = strings.Replace(document,
+		"    upstream_ref: baseline",
+		"    upstream_ref: baseline\n    resilience:\n      unknown: true",
+		1,
+	)
+	if _, _, err := Decode(strings.NewReader(document)); err == nil ||
+		!strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("Decode() error = %v, want unknown field", err)
+	}
+}
+
+func TestDecodeLegacyResilienceDefaults(t *testing.T) {
+	bootstrap, resources, err := Decode(strings.NewReader(validV3Document(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.Runtime.Health.Workers != DefaultHealthWorkers ||
+		bootstrap.Runtime.Health.ReadyQueueCapacity != DefaultHealthQueueCapacity {
+		t.Fatalf("legacy health runtime = %+v", bootstrap.Runtime.Health)
+	}
+	if resources.Upstreams[0].Health.Active != nil ||
+		resources.Upstreams[0].Retry.MaxAttempts != 1 ||
+		resources.Upstreams[0].Retry.TotalTimeout != 0 {
+		t.Fatalf("legacy resilience changed: %+v", resources.Upstreams[0])
+	}
+}
+
 func TestDecodeV1Alpha3PreservesExplicitZeroWeight(t *testing.T) {
 	document := replaceOnce(t, validV3Document(t), "weight: 5", "weight: 0")
 	_, resources, err := Decode(strings.NewReader(document))
