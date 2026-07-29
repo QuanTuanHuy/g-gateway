@@ -74,6 +74,23 @@ func TestDecodeValidV1Alpha4ResilienceDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestDecodePhase3BExample(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "configs", "phase3b.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certFile, keyFile := writeTLSFiles(t)
+	document := strings.ReplaceAll(string(data), "/certs/server.crt", certFile)
+	document = strings.ReplaceAll(document, "/certs/server.key", keyFile)
+	bootstrap, resources, err := Decode(strings.NewReader(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.Runtime.Health.Workers != 16 || len(resources.Upstreams) != 2 {
+		t.Fatalf("example = runtime:%+v upstreams:%d", bootstrap.Runtime, len(resources.Upstreams))
+	}
+}
+
 func TestDecodeV1Alpha4RejectsUnknownResilienceField(t *testing.T) {
 	document := strings.Replace(validV3Document(t), "gateway/v1alpha3", "gateway/v1alpha4", 1)
 	document = strings.Replace(document,

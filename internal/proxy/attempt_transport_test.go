@@ -58,7 +58,7 @@ func TestAttemptTransportBudgetDenialKeepsFirstResponse(t *testing.T) {
 	}
 }
 
-func orderedRetryServers(t *testing.T, failedCalls, successfulCalls *atomic.Int32) (string, string) {
+func orderedRetryServers(t testing.TB, failedCalls, successfulCalls *atomic.Int32) (string, string) {
 	t.Helper()
 	var firstFails bool
 	first := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

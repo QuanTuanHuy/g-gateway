@@ -1,18 +1,20 @@
 # G-Gateway
 
-G-Gateway is a Go data-plane experiment that targets APISIX-class gateway semantics and performance through incremental, evidence-driven phases. Phase 3A is implemented: immutable runtime snapshots and the compiled router/plugin pipeline now use registry-backed multi-endpoint upstream plans, shared transports, weighted round-robin, and consistent hash. Current checkpoint: `implementation complete; canonical resource evidence pending`. This is not yet a general-purpose or production-certified API gateway.
+G-Gateway is a Go data-plane experiment that targets APISIX-class gateway semantics and performance through incremental, evidence-driven phases. Phase 3B implementation is in progress: registry-backed upstream plans now add bounded active/passive health, total request deadlines, replay-safe multi-endpoint retries, and adaptive retry budgets while preserving shared transports. This is not yet a general-purpose or production-certified API gateway.
 
-The accepted architecture and phased roadmap are documented in [`docs/architecture/apache-api-six-architecture-design.md`](docs/architecture/apache-api-six-architecture-design.md). The [Phase 3A design](docs/superpowers/specs/2026-07-26-phase-3a-upstream-runtime-balancing-kernel-design.md), [current evidence status](docs/benchmarks/phase-3a-current-status.md), and [operational runbook](docs/operations/phase-3a-runbook.md) define the current checkpoint. The [deferred Phase 2 Task 16 evidence](docs/benchmarks/phase-2-current-status.md#deferred-task-16) remains mandatory before production certification.
+The accepted architecture and phased roadmap are documented in [`docs/architecture/apache-api-six-architecture-design.md`](docs/architecture/apache-api-six-architecture-design.md). The [Phase 3B design](docs/superpowers/specs/2026-07-27-phase-3b-health-timeout-retry-design.md), [current evidence status](docs/benchmarks/phase-3b-current-status.md), and [operational runbook](docs/operations/phase-3b-runbook.md) define the current checkpoint. The [deferred Phase 2 Task 16 evidence](docs/benchmarks/phase-2-current-status.md#deferred-task-16) remains mandatory before production certification.
 
 ## Current capabilities
 
-- Strict `gateway/v1alpha3` resources plus `gateway/v1alpha1` and `gateway/v1alpha2` compatibility.
+- Strict `gateway/v1alpha4` resilience resources plus `gateway/v1alpha1`–`gateway/v1alpha3` compatibility.
 - Immutable versioned runtime snapshots built off-path and activated atomically.
 - Multiple routes and services resolved to immutable registry-backed upstream plans.
 - Dynamic add/remove/update through internal `Gateway.Apply`, with transactional rollback and last-known-good behavior.
 - Weighted endpoints, deterministic weighted round-robin, and bounded xxHash64 consistent hash.
 - Canonical endpoint identity, weight-zero disablement, and shared transport profiles that preserve unrelated keepalive pools.
 - Per-request snapshot leases, bounded retired generations, asynchronous reaping, and final registry cleanup.
+- Lazy bounded HTTP/TCP active health, optional passive health, fail-closed all-unhealthy behavior, and policy-fingerprint state reuse.
+- Replay-safe retries across distinct endpoints, adaptive fixed-point retry budgets, and post-plugin total request deadlines.
 - Compiled exact/wildcard/hostless host routing and exact/prefix/parameter/catch-all path routing.
 - Compiled method, header, and query predicates with deterministic precedence.
 - Typed request context and compiled request-id/header-rewrite plugins.
@@ -23,7 +25,7 @@ The accepted architecture and phased roadmap are documented in [`docs/architectu
 - Separate admin listener with health, readiness, bounded runtime/upstream Prometheus metrics, and opt-in pprof.
 - Graceful SIGINT/SIGTERM drain with readiness removed before traffic shutdown, request leases drained, and unowned pools closed.
 
-Current exclusions include a public configuration update surface, health checks, retries, circuit breaking, HTTPS/mTLS or HTTP/2 upstreams, dynamic downstream SNI certificates, regex routing, authentication/rate limiting, WebSocket/CONNECT, access logging, and distributed control-plane behavior. Phase 3B owns health/retry, Phase 3C owns TLS/protocol/WebSocket, and Phase 3D owns bounded access logging and integrated APISIX comparison.
+Current exclusions include a public configuration update surface, circuit breaking, HTTPS/mTLS or HTTP/2 upstreams, dynamic downstream SNI certificates, regex routing, authentication/rate limiting, WebSocket/CONNECT, access logging, and distributed control-plane behavior. Phase 3C owns TLS/protocol/WebSocket, and Phase 3D owns bounded access logging and integrated APISIX comparison.
 
 ## Repository layout
 

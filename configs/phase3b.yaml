@@ -1,0 +1,103 @@
+api_version: gateway/v1alpha4
+
+runtime:
+  max_retired_snapshots: 64
+  health:
+    workers: 16
+    ready_queue_capacity: 4096
+
+listeners:
+  http:
+    address: ":8080"
+  https:
+    address: ":8443"
+    certificate_file: /certs/server.crt
+    private_key_file: /certs/server.key
+  admin:
+    address: ":9090"
+
+server:
+  read_header_timeout: 5s
+  idle_timeout: 60s
+  shutdown_timeout: 30s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 67108864
+
+telemetry:
+  request_metrics_enabled: true
+  profiling_enabled: false
+
+routes:
+  - id: users
+    priority: 100
+    match:
+      path: /users/{id}
+      methods: [GET]
+    upstream_ref: users
+    resilience:
+      max_attempts: 3
+      total_timeout: 5s
+      methods: [GET, HEAD]
+      retry_on:
+        connect_failure: true
+        connection_failure: true
+        response_header_timeout: true
+        statuses: [429, 502, 503, 504]
+  - id: tcp-checked
+    priority: 50
+    match:
+      path: /tcp
+      methods: [GET]
+    upstream_ref: tcp-checked
+
+services: []
+
+upstreams:
+  - id: users
+    endpoints:
+      - url: http://upstream-a:8080
+        weight: 5
+      - url: http://upstream-b:8080
+        weight: 2
+    balancer:
+      type: weighted_round_robin
+    health:
+      active:
+        type: http
+        path: /healthz
+      passive: {}
+    retry:
+      max_attempts: 1
+      methods: [GET, HEAD, OPTIONS]
+      retry_on:
+        connect_failure: true
+        connection_failure: true
+        response_header_timeout: true
+        statuses: [429, 502, 503, 504]
+      budget:
+        ratio_per_1000: 100
+        burst: 10
+        max_inflight: 32
+      total_timeout: 30s
+    transport:
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 1024
+      max_idle_connections_per_host: 1024
+  - id: tcp-checked
+    endpoints:
+      - url: http://upstream-c:8080
+        weight: 1
+    balancer:
+      type: weighted_round_robin
+    health:
+      active:
+        type: tcp
+    retry: {}
+    transport:
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 1024
+      max_idle_connections_per_host: 1024

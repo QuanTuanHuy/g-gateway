@@ -386,6 +386,8 @@ Thay đổi chỉ ảnh hưởng implementation nội bộ của phase hiện t�
 
 ## 14. Bước tiếp theo
 
-Bước tiếp theo là brainstorm Phase 3B — health, timeout, retry và retry budget — từ các contract được ghi trong Phase 3A current status. Implementation Phase 3B chỉ bắt đầu sau khi design và plan riêng được duyệt.
+Phase 3B health, timeout, retry và retry-budget implementation đã được triển khai theo design/plan riêng; developer-machine evidence được ghi tại [Phase 3B current status](../../benchmarks/phase-3b-current-status.md). Canonical Linux/race/full-profile gates vẫn pending nên toàn bộ Phase 3 chưa được đánh dấu accepted.
 
-Không gộp phạm vi Phase 3C/3D vào Phase 3B và không coi Phase 3A provisional evidence là APISIX parity hoặc production certification.
+Phase 3C nhận shared transports, health-aware plans, retry/deadline behavior và lifecycle sạch. Phase 3C sở hữu upstream TLS/mTLS, protocol negotiation, dynamic downstream SNI và WebSocket. Phase 3D tiếp tục sở hữu access logging và integrated APISIX comparison.
+
+Không coi Phase 3B developer-machine evidence là APISIX parity hoặc production certification.

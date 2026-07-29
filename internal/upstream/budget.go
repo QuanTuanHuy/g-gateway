@@ -17,13 +17,9 @@ type retryBudget struct {
 	maxObserved atomic.Uint32
 }
 
-type retryPermitState struct {
+type RetryPermit struct {
 	budget   *retryBudget
 	released atomic.Bool
-}
-
-type RetryPermit struct {
-	state *retryPermitState
 }
 
 func newRetryBudget(policy model.RetryBudgetPolicy) *retryBudget {
@@ -69,19 +65,19 @@ func (b *retryBudget) Acquire() (RetryPermit, bool) {
 			return RetryPermit{}, false
 		}
 		if b.credits.CompareAndSwap(current, current-retryCreditUnit) {
-			return RetryPermit{state: &retryPermitState{budget: b}}, true
+			return RetryPermit{budget: b}, true
 		}
 	}
 }
 
 func (p *RetryPermit) Release() {
-	if p == nil || p.state == nil {
+	if p == nil || p.budget == nil {
 		panic("upstream: release invalid retry permit")
 	}
-	if p.state.released.Swap(true) {
+	if p.released.Swap(true) {
 		panic("upstream: retry permit released twice")
 	}
-	p.state.budget.inflight.Add(^uint32(0))
+	p.budget.inflight.Add(^uint32(0))
 }
 
 func (b *retryBudget) recordMaxObserved(value uint32) {

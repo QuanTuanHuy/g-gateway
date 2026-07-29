@@ -183,7 +183,7 @@ func TestRuntimeHandlerLegacyPolicyHasNoTotalDeadline(t *testing.T) {
 }
 
 func newRuntimeTestHandler(
-	t *testing.T,
+	t testing.TB,
 	resources model.ResourceSet,
 	apply bool,
 ) (http.Handler, *runtime.Manager, *upstream.Registry) {

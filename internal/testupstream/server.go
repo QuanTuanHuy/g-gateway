@@ -48,12 +48,68 @@ func New(logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /headers", state.headers)
 	mux.HandleFunc("GET /stream", state.stream)
 	mux.HandleFunc("GET /delay/{duration}", state.delay)
+	mux.HandleFunc("GET /status/{code}", state.status)
+	mux.HandleFunc("GET /header-delay/{duration}", state.headerDelay)
+	mux.HandleFunc("GET /stream-delay/{duration}", state.streamDelay)
 	mux.HandleFunc("GET /trailers", state.trailers)
 	mux.HandleFunc("GET /close", state.closeConnection)
 	mux.HandleFunc("GET /debug/state", state.debugState)
 	mux.HandleFunc("POST /debug/reset", state.reset)
 	state.handler = mux
 	return state
+}
+
+func (s *server) status(response http.ResponseWriter, request *http.Request) {
+	code, err := strconv.Atoi(request.PathValue("code"))
+	if err != nil || code < 100 || code > 599 {
+		http.Error(response, "invalid status code", http.StatusBadRequest)
+		return
+	}
+	response.WriteHeader(code)
+}
+
+func (s *server) headerDelay(response http.ResponseWriter, request *http.Request) {
+	duration, ok := boundedDelay(response, request.PathValue("duration"))
+	if !ok {
+		return
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		response.WriteHeader(http.StatusNoContent)
+	case <-request.Context().Done():
+		s.cancellations.Add(1)
+	}
+}
+
+func (s *server) streamDelay(response http.ResponseWriter, request *http.Request) {
+	duration, ok := boundedDelay(response, request.PathValue("duration"))
+	if !ok {
+		return
+	}
+	response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(response, "first\n")
+	if err := http.NewResponseController(response).Flush(); err != nil {
+		return
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		_, _ = io.WriteString(response, "second\n")
+	case <-request.Context().Done():
+		s.cancellations.Add(1)
+	}
+}
+
+func boundedDelay(response http.ResponseWriter, raw string) (time.Duration, bool) {
+	duration, err := time.ParseDuration(raw)
+	if err != nil || duration < 0 || duration > 30*time.Second {
+		http.Error(response, "invalid delay", http.StatusBadRequest)
+		return 0, false
+	}
+	return duration, true
 }
 
 func (s *server) ServeHTTP(response http.ResponseWriter, request *http.Request) {

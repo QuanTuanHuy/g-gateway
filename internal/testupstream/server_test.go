@@ -138,6 +138,33 @@ func TestCloseTerminatesConnection(t *testing.T) {
 	}
 }
 
+func TestStatusAndDelayEndpoints(t *testing.T) {
+	handler := New(testLogger())
+	status := httptest.NewRecorder()
+	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/status/503", nil))
+	if status.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status endpoint = %d", status.Code)
+	}
+	for _, path := range []string{"/status/99", "/status/600", "/header-delay/nope", "/stream-delay/31s"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s status = %d, want 400", path, recorder.Code)
+		}
+	}
+
+	headerDelay := httptest.NewRecorder()
+	handler.ServeHTTP(headerDelay, httptest.NewRequest(http.MethodGet, "/header-delay/1ms", nil))
+	if headerDelay.Code != http.StatusNoContent {
+		t.Fatalf("header delay status = %d", headerDelay.Code)
+	}
+	streamDelay := httptest.NewRecorder()
+	handler.ServeHTTP(streamDelay, httptest.NewRequest(http.MethodGet, "/stream-delay/1ms", nil))
+	if streamDelay.Body.String() != "first\nsecond\n" {
+		t.Fatalf("stream delay body = %q", streamDelay.Body.String())
+	}
+}
+
 func TestDebugStateCountsConnectionsAndResets(t *testing.T) {
 	server := httptest.NewServer(New(testLogger()))
 	defer server.Close()
