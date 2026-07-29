@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,33 +28,136 @@ func TestPhase3BHealthyProxyComparison(t *testing.T) {
 	if os.Getenv("GATEWAY_PHASE3B_ACCEPTANCE") == "1" {
 		requests = 5_000
 	}
-	legacyThroughput, legacyP99 := measureHealthyProxy(t, legacy, requests)
-	phase3BThroughput, phase3BP99 := measureHealthyProxy(t, phase3B, requests)
-	t.Logf("seed=20260727 requests=%d legacy=%.2f req/s p99=%s phase3b=%.2f req/s p99=%s",
-		requests, legacyThroughput, legacyP99, phase3BThroughput, phase3BP99)
-	if os.Getenv("GATEWAY_PHASE3B_ACCEPTANCE") == "1" {
-		if phase3BThroughput < legacyThroughput*95/100 {
-			t.Fatalf("healthy throughput = %.2f, want >= 95%% of %.2f", phase3BThroughput, legacyThroughput)
+	legacyHandler, _, _ := newRuntimeTestHandler(t, legacy, true)
+	phase3BHandler, _, _ := newRuntimeTestHandler(t, phase3B, true)
+	const concurrency = 8
+	warmupRequests := min(requests/2, 2_500)
+	for _, handler := range []http.Handler{legacyHandler, phase3BHandler} {
+		if _, _, err := measureHTTPHandler(handler, warmupRequests, concurrency); err != nil {
+			t.Fatal(err)
 		}
-		if phase3BP99 > legacyP99*110/100 {
-			t.Fatalf("healthy p99 = %s, want <= 110%% of %s", phase3BP99, legacyP99)
+	}
+	rounds := 1
+	if os.Getenv("GATEWAY_PHASE3B_ACCEPTANCE") == "1" {
+		rounds = 5
+	}
+	legacyMeasurements := make([]healthyMeasurement, 0, rounds)
+	phase3BMeasurements := make([]healthyMeasurement, 0, rounds)
+	measure := func(handler http.Handler) healthyMeasurement {
+		throughput, p99, err := measureHTTPHandler(handler, requests, concurrency)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return healthyMeasurement{throughput: throughput, p99: p99}
+	}
+	for round := range rounds {
+		if round%2 == 0 {
+			legacyMeasurements = append(legacyMeasurements, measure(legacyHandler))
+			phase3BMeasurements = append(phase3BMeasurements, measure(phase3BHandler))
+		} else {
+			phase3BMeasurements = append(phase3BMeasurements, measure(phase3BHandler))
+			legacyMeasurements = append(legacyMeasurements, measure(legacyHandler))
+		}
+	}
+	legacyResult := medianHealthyMeasurement(legacyMeasurements)
+	phase3BResult := medianHealthyMeasurement(phase3BMeasurements)
+	t.Logf("seed=20260727 requests=%d concurrency=%d rounds=%d legacy=%.2f req/s p99=%s phase3b=%.2f req/s p99=%s",
+		requests, concurrency, rounds, legacyResult.throughput, legacyResult.p99, phase3BResult.throughput, phase3BResult.p99)
+	if os.Getenv("GATEWAY_PHASE3B_ACCEPTANCE") == "1" {
+		if phase3BResult.throughput < legacyResult.throughput*95/100 {
+			t.Fatalf("healthy throughput = %.2f, want >= 95%% of %.2f", phase3BResult.throughput, legacyResult.throughput)
+		}
+		if phase3BResult.p99 > legacyResult.p99*110/100 {
+			t.Fatalf("healthy p99 = %s, want <= 110%% of %s", phase3BResult.p99, legacyResult.p99)
 		}
 	}
 }
 
-func measureHealthyProxy(t *testing.T, resources model.ResourceSet, requests int) (float64, time.Duration) {
-	t.Helper()
-	handler, _, _ := newRuntimeTestHandler(t, resources, true)
-	durations := make([]time.Duration, requests)
-	started := time.Now()
-	for index := range requests {
-		requestStarted := time.Now()
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway/users/42?tenant=acme", nil))
-		if response.Code != http.StatusNoContent {
-			t.Fatalf("response = %d %s", response.Code, response.Body.String())
+func TestMeasureHTTPHandlerUsesFixedConcurrency(t *testing.T) {
+	var active, maximum atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		current := active.Add(1)
+		for {
+			observed := maximum.Load()
+			if current <= observed || maximum.CompareAndSwap(observed, current) {
+				break
+			}
 		}
-		durations[index] = time.Since(requestStarted)
+		if current == 4 {
+			releaseOnce.Do(func() { close(release) })
+		}
+		<-release
+		active.Add(-1)
+		writer.WriteHeader(http.StatusNoContent)
+	})
+
+	if _, _, err := measureHTTPHandler(handler, 8, 4); err != nil {
+		t.Fatal(err)
+	}
+	if got := maximum.Load(); got != 4 {
+		t.Fatalf("maximum concurrency = %d, want 4", got)
+	}
+}
+
+type healthyMeasurement struct {
+	throughput float64
+	p99        time.Duration
+}
+
+func medianHealthyMeasurement(measurements []healthyMeasurement) healthyMeasurement {
+	throughputs := make([]float64, len(measurements))
+	p99s := make([]time.Duration, len(measurements))
+	for index, measurement := range measurements {
+		throughputs[index] = measurement.throughput
+		p99s[index] = measurement.p99
+	}
+	sort.Float64s(throughputs)
+	sort.Slice(p99s, func(i, j int) bool { return p99s[i] < p99s[j] })
+	middle := len(measurements) / 2
+	return healthyMeasurement{throughput: throughputs[middle], p99: p99s[middle]}
+}
+
+func measureHTTPHandler(handler http.Handler, requests, concurrency int) (float64, time.Duration, error) {
+	if handler == nil || requests < 1 || concurrency < 1 {
+		return 0, 0, fmt.Errorf("handler, requests, and concurrency must be valid")
+	}
+	durations := make([]time.Duration, requests)
+	var next atomic.Int64
+	errs := make(chan error, concurrency)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(concurrency)
+	for range concurrency {
+		go func() {
+			defer workers.Done()
+			<-start
+			for {
+				index := int(next.Add(1) - 1)
+				if index >= requests {
+					return
+				}
+				requestStarted := time.Now()
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway/users/42?tenant=acme", nil))
+				if response.Code != http.StatusNoContent {
+					select {
+					case errs <- fmt.Errorf("response = %d %s", response.Code, response.Body.String()):
+					default:
+					}
+					return
+				}
+				durations[index] = time.Since(requestStarted)
+			}
+		}()
+	}
+	started := time.Now()
+	close(start)
+	workers.Wait()
+	close(errs)
+	if err := <-errs; err != nil {
+		return 0, 0, err
 	}
 	elapsed := time.Since(started)
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
@@ -60,7 +165,7 @@ func measureHealthyProxy(t *testing.T, resources model.ResourceSet, requests int
 	if index > 0 {
 		index--
 	}
-	return float64(requests) / elapsed.Seconds(), durations[index]
+	return float64(requests) / elapsed.Seconds(), durations[index], nil
 }
 
 func proxyResiliencePolicy() (model.HealthPolicy, model.RetryPolicy) {

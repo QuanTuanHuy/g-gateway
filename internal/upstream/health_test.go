@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 )
@@ -25,6 +26,30 @@ func TestEndpointHealthTransitionsAndActiveOnlyRecovery(t *testing.T) {
 	health.Observe(Observation{Source: SourceActive, Kind: OutcomeSuccess, Status: 200})
 	if health.State() != HealthHealthy || !health.Selectable() {
 		t.Fatalf("recovered state = %v selectable=%v", health.State(), health.Selectable())
+	}
+}
+
+func TestEndpointHealthSkipsPassiveObservationWhenDisabled(t *testing.T) {
+	health := newEndpointHealth("users\x00http://a:80", model.HealthPolicy{
+		Active: &model.ActiveHealthPolicy{
+			Type:             model.HealthCheckHTTP,
+			HealthySuccesses: 1,
+		},
+	}, 1)
+	health.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		health.Observe(Observation{Source: SourcePassive, Kind: OutcomeSuccess, Status: 204})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		health.mu.Unlock()
+	case <-time.After(50 * time.Millisecond):
+		health.mu.Unlock()
+		<-done
+		t.Fatal("passive observation blocked on health mutex while passive policy was disabled")
 	}
 }
 

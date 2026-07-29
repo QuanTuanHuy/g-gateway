@@ -90,6 +90,9 @@ func (h *EndpointHealth) Retire() {
 }
 
 func (h *EndpointHealth) Observe(observation Observation) {
+	if observation.Source == SourcePassive && h.policy.Passive == nil {
+		return
+	}
 	if h.retired.Load() {
 		return
 	}
