@@ -8,6 +8,8 @@ import (
 )
 
 type endpointRuntime struct {
+	// identity deliberately excludes endpoint weight so weight-only updates
+	// can reuse connection and resilience runtime state.
 	identity string
 	target   *url.URL
 }
@@ -22,6 +24,9 @@ func newEndpointRuntime(upstreamID string, endpoint model.Endpoint) (*endpointRu
 	}
 	targetCopy := *target
 	return &endpointRuntime{
+		// Endpoint identity combines the upstream ID and canonical URL; the
+		// upstream boundary prevents equal URLs in different upstreams from
+		// sharing mutable runtime state.
 		identity: endpointIdentity(upstreamID, endpoint.URL),
 		target:   &targetCopy,
 	}, nil

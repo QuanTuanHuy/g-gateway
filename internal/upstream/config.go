@@ -16,27 +16,51 @@ import (
 )
 
 const (
-	MaxUpstreams          = 10_000
-	MaxSnapshotEndpoints  = 100_000
-	MaxUpstreamEndpoints  = 1_000
-	MaxEndpointWeight     = 1_000
-	MaxHashKeySources     = 8
-	MaxWRRSchedule        = 8_192
-	MaxSnapshotWRRSlots   = 8_000_000
-	MaxContinuumPoints    = 65_536
+	// MaxUpstreams is the maximum number of upstream resources accepted in one
+	// normalized snapshot.
+	MaxUpstreams = 10_000
+	// MaxSnapshotEndpoints is the maximum total endpoint count across one
+	// normalized snapshot.
+	MaxSnapshotEndpoints = 100_000
+	// MaxUpstreamEndpoints is the maximum endpoint count in one upstream.
+	MaxUpstreamEndpoints = 1_000
+	// MaxEndpointWeight is the maximum relative weight of one endpoint.
+	MaxEndpointWeight = 1_000
+	// MaxHashKeySources is the maximum number of ordered components in one
+	// consistent-hash key.
+	MaxHashKeySources = 8
+	// MaxWRRSchedule is the maximum number of slots in one weighted
+	// round-robin schedule.
+	MaxWRRSchedule = 8_192
+	// MaxSnapshotWRRSlots is the maximum aggregate weighted round-robin slot
+	// budget reserved for one snapshot.
+	MaxSnapshotWRRSlots = 8_000_000
+	// MaxContinuumPoints is the maximum number of virtual hash points in one
+	// consistent-hash continuum.
+	MaxContinuumPoints = 65_536
+	// MaxSnapshotHashPoints is the maximum aggregate consistent-hash point
+	// budget reserved for one snapshot.
 	MaxSnapshotHashPoints = 8_000_000
 
 	maxHashSourceNameBytes  = 256
 	maxHashSourceValueBytes = 4_096
 )
 
+// ConfigError is a stable coded configuration error associated with one field
+// and, when available, one upstream resource.
 type ConfigError struct {
-	Code       string
-	Field      string
+	// Code is the stable machine-readable error category.
+	Code string
+	// Field is the canonical path of the invalid configuration value.
+	Field string
+	// UpstreamID identifies the affected upstream, or is empty for a
+	// collection-wide failure.
 	UpstreamID string
-	Cause      error
+	// Cause contains the underlying validation detail, when one exists.
+	Cause error
 }
 
+// Error returns the stable code, field path, and optional cause text.
 func (e *ConfigError) Error() string {
 	if e.Cause == nil {
 		return e.Code + ": " + e.Field
@@ -44,6 +68,7 @@ func (e *ConfigError) Error() string {
 	return e.Code + ": " + e.Field + ": " + e.Cause.Error()
 }
 
+// Unwrap returns the underlying validation cause.
 func (e *ConfigError) Unwrap() error {
 	return e.Cause
 }
@@ -54,6 +79,13 @@ type endpointConfig struct {
 	index    int
 }
 
+// Normalize validates resources and returns a canonical top-level slice. It
+// canonicalizes endpoint URLs, applies balancer and legacy retry defaults,
+// normalizes ordered sets, sorts endpoints deterministically, rejects duplicate
+// identities, and enforces per-upstream and snapshot-wide budgets. Normalize
+// may reorder or rewrite nested slices and pointed-to policies reachable from
+// resources; callers that must preserve the input should clone it first. On
+// error, the returned slice is nil and no partial result is usable.
 func Normalize(resources []model.Upstream) ([]model.Upstream, error) {
 	if len(resources) > MaxUpstreams {
 		return nil, configError("UPSTREAM_ENDPOINT_LIMIT", "upstreams", "", fmt.Errorf("got %d upstreams, maximum is %d", len(resources), MaxUpstreams))

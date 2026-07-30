@@ -19,6 +19,8 @@ type budgetKey struct {
 }
 
 func makeHealthKey(_ string, endpointIdentity string, policy model.HealthPolicy) healthKey {
+	// Health reuse follows endpoint identity and every health-policy semantic,
+	// but intentionally ignores endpoint weight.
 	digest := sha256.New()
 	if policy.Active != nil {
 		writeByte(digest, 1)
@@ -52,6 +54,8 @@ func makeHealthKey(_ string, endpointIdentity string, policy model.HealthPolicy)
 }
 
 func makeBudgetKey(upstreamID string, policy model.RetryBudgetPolicy) budgetKey {
+	// Retry-budget reuse depends only on upstream identity and budget
+	// semantics; retry classification changes do not discard earned credits.
 	digest := sha256.New()
 	writeUint16(digest, policy.RatioPer1000)
 	writeUint16(digest, policy.Burst)

@@ -94,6 +94,8 @@ func compileContinuum(endpoints []weightedEndpoint) (continuum, error) {
 		return continuum{}, fmt.Errorf("at least one positive endpoint weight is required")
 	}
 	if len(active) == 1 {
+		// The direct representation avoids allocating a continuum for the
+		// single-endpoint case.
 		return continuum{direct: active[0].index}, nil
 	}
 	if len(active) > MaxContinuumPoints {
@@ -118,6 +120,8 @@ func compileContinuum(endpoints []weightedEndpoint) (continuum, error) {
 		}
 	} else {
 		pointCount = MaxContinuumPoints
+		// Capping preserves at least one point per active endpoint, then
+		// apportions the remaining bounded points deterministically by weight.
 		assignCappedContinuumPoints(active, normalizedSum, pointCount)
 	}
 
@@ -192,6 +196,8 @@ func sortContinuumPoints(points []continuumPoint) {
 			return points[i].hash < points[j].hash
 		}
 		if points[i].identity != points[j].identity {
+			// Canonical identity and virtual index make hash collisions stable
+			// across builds and declaration order.
 			return points[i].identity < points[j].identity
 		}
 		return points[i].virtualIndex < points[j].virtualIndex

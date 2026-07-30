@@ -531,10 +531,12 @@ undocumented.
 
 Document every limit separately with its unit and enforcement scope.
 Document `ConfigError` as a stable coded/path-aware configuration error,
-including unwrap behavior. Document `Normalize` as returning a canonical,
-independently owned resource slice or an error with no usable partial result.
-Cover endpoint URL canonicalization, deterministic sorting, default policies,
-duplicate rejection, and global budget enforcement.
+including unwrap behavior. Document `Normalize` as returning a canonical
+top-level resource slice or an error with no usable partial result. State that
+normalization may rewrite nested input-owned slices and pointer policies, so a
+caller that must preserve the input must clone it first. Cover endpoint URL
+canonicalization, deterministic sorting, default policies, duplicate rejection,
+and global budget enforcement.
 
 - [ ] **Step 4: Explain endpoint and fingerprint invariants**
 
