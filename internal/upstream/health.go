@@ -8,43 +8,78 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 )
 
+// HealthState is the current selectability state of one endpoint.
 type HealthState uint32
+
+// ObservationSource identifies whether an outcome came from a scheduled probe
+// or proxied request traffic.
 type ObservationSource uint8
+
+// OutcomeKind is the closed classification applied to a health observation.
 type OutcomeKind uint8
 
 const (
+	// HealthUnknown is the initial selectable state before a threshold is
+	// reached.
 	HealthUnknown HealthState = iota
+	// HealthHealthy is the selectable state after the configured success
+	// threshold is reached.
 	HealthHealthy
+	// HealthUnhealthy is the non-selectable state after a failure threshold is
+	// reached.
 	HealthUnhealthy
 )
 
 const (
+	// SourceActive identifies an observation from an active health probe.
 	SourceActive ObservationSource = iota
+	// SourcePassive identifies an observation from proxied request traffic.
 	SourcePassive
 )
 
 const (
+	// OutcomeSuccess records a completed healthy outcome.
 	OutcomeSuccess OutcomeKind = iota
+	// OutcomeHTTPFailure records a configured unhealthy HTTP status.
 	OutcomeHTTPFailure
+	// OutcomeTransportFailure records a non-timeout transport failure.
 	OutcomeTransportFailure
+	// OutcomeTimeout records an operation classified as timed out.
 	OutcomeTimeout
+	// OutcomeNeutral records an active HTTP status that changes no counters.
 	OutcomeNeutral
 )
 
+// Observation is one active or passive endpoint-health outcome. A non-zero
+// Status is classified against the applicable policy before counters change.
 type Observation struct {
+	// Source identifies active probing or passive request traffic.
 	Source ObservationSource
-	Kind   OutcomeKind
+	// Kind is the preliminary or final outcome classification.
+	Kind OutcomeKind
+	// Status is the HTTP response status, or zero for a transport-only outcome.
 	Status int
 }
 
+// HealthTransition describes one endpoint state change delivered to a
+// transition hook.
 type HealthTransition struct {
+	// EndpointID is the canonical endpoint identity.
 	EndpointID string
+	// Generation identifies the health runtime that produced the transition.
 	Generation uint64
-	Source     ObservationSource
-	From       HealthState
-	To         HealthState
+	// Source identifies the observation that caused the transition.
+	Source ObservationSource
+	// From is the previous endpoint state.
+	From HealthState
+	// To is the new endpoint state.
+	To HealthState
 }
 
+// EndpointHealth tracks one generation of endpoint health. It starts unknown,
+// treats unknown and healthy as selectable, permits recovery from unhealthy
+// only through active successes, and is safe for concurrent observation and
+// reads.
 type EndpointHealth struct {
 	state      atomic.Uint32
 	generation uint64
@@ -67,28 +102,40 @@ func newEndpointHealth(identity string, policy model.HealthPolicy, generation ui
 	}
 }
 
+// State returns the endpoint's current health state.
 func (h *EndpointHealth) State() HealthState {
 	return HealthState(h.state.Load())
 }
 
+// Selectable reports whether the endpoint may receive request traffic.
 func (h *EndpointHealth) Selectable() bool {
 	return HealthState(h.state.Load()) != HealthUnhealthy
 }
 
+// Generation returns the immutable runtime generation used to reject stale
+// probe results.
 func (h *EndpointHealth) Generation() uint64 {
 	return h.generation
 }
 
+// SetTransitionHook replaces the callback invoked after each state transition.
+// The callback runs outside the health mutex.
 func (h *EndpointHealth) SetTransitionHook(hook func(HealthTransition)) {
 	h.mu.Lock()
 	h.onChange = hook
 	h.mu.Unlock()
 }
 
+// Retire idempotently prevents future observations from changing state.
 func (h *EndpointHealth) Retire() {
 	h.retired.Store(true)
 }
 
+// Observe applies one observation according to active/passive thresholds. A
+// success resets all failure counters, a failure resets the success streak and
+// increments only its category, neutral outcomes change nothing, and every
+// transition resets all counters. Observations after retirement and passive
+// observations without a passive policy are ignored.
 func (h *EndpointHealth) Observe(observation Observation) {
 	if observation.Source == SourcePassive && h.policy.Passive == nil {
 		return

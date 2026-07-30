@@ -18,13 +18,23 @@ type healthCoordinatorOptions struct {
 	TCPProber     Prober
 }
 
+// HealthCoordinatorStats contains current scheduler gauges and the cumulative
+// reschedule count.
 type HealthCoordinatorStats struct {
-	Workers     int
-	Scheduled   int
-	ReadyQueue  int
+	// Workers is the fixed worker count owned by the coordinator.
+	Workers int
+	// Scheduled is the current time-ordered pending-probe count.
+	Scheduled int
+	// ReadyQueue is the current number of probes waiting for workers.
+	ReadyQueue int
+	// Reschedules is the cumulative count of probes rescheduled after queue
+	// pressure or recovered worker panic.
 	Reschedules uint64
 }
 
+// HealthCoordinator owns one time-ordered scheduler, one bounded ready queue,
+// and a fixed probe worker pool. Registrations activate lazily, and Close must
+// be called to release goroutines and probe transports.
 type HealthCoordinator struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -62,22 +72,31 @@ type scheduledProbe struct {
 
 type scheduledProbeHeap []*scheduledProbe
 
+// Len returns the pending-probe count for heap.Interface.
 func (h scheduledProbeHeap) Len() int { return len(h) }
+
+// Less orders probes by due time and then insertion sequence.
 func (h scheduledProbeHeap) Less(i, j int) bool {
 	if !h[i].due.Equal(h[j].due) {
 		return h[i].due.Before(h[j].due)
 	}
 	return h[i].sequence < h[j].sequence
 }
+
+// Swap exchanges two probes and maintains their heap indexes.
 func (h scheduledProbeHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 	h[i].index, h[j].index = i, j
 }
+
+// Push appends one scheduled probe for heap.Interface.
 func (h *scheduledProbeHeap) Push(value any) {
 	item := value.(*scheduledProbe)
 	item.index = len(*h)
 	*h = append(*h, item)
 }
+
+// Pop removes and returns the final scheduled probe for heap.Interface.
 func (h *scheduledProbeHeap) Pop() any {
 	old := *h
 	last := len(old) - 1
@@ -120,10 +139,14 @@ func newHealthCoordinator(options healthCoordinatorOptions) (*HealthCoordinator,
 	return coordinator, nil
 }
 
+// Register associates target with health without scheduling work. The returned
+// registration remains dormant until ActivateHealth.
 func (c *HealthCoordinator) Register(target ProbeTarget, health *EndpointHealth) *healthRegistration {
 	return &healthRegistration{coordinator: c, target: target, health: health}
 }
 
+// ActivateHealth non-blockingly schedules the registration once. Calls after
+// activation, retirement, or coordinator stop are no-ops.
 func (r *healthRegistration) ActivateHealth() {
 	if r == nil || r.coordinator == nil || r.health == nil ||
 		r.retired.Load() || r.coordinator.stopped.Load() ||
@@ -133,6 +156,8 @@ func (r *healthRegistration) ActivateHealth() {
 	r.coordinator.schedule(r, time.Now().Add(initialProbeJitter(r.target)))
 }
 
+// Retire idempotently disables the registration, retires its health tracker,
+// and wakes the scheduler so stale work can be discarded.
 func (r *healthRegistration) Retire() {
 	if r == nil || !r.retired.CompareAndSwap(false, true) {
 		return
@@ -163,6 +188,8 @@ func (c *HealthCoordinator) schedule(registration *healthRegistration, due time.
 }
 
 func (c *HealthCoordinator) signalWake() {
+	// Wake-up is deliberately coalesced so request and reconciliation paths
+	// never block behind the scheduler.
 	select {
 	case c.wake <- struct{}{}:
 	default:
@@ -254,6 +281,8 @@ func (c *HealthCoordinator) runWorker() {
 }
 
 func (c *HealthCoordinator) processProbe(item *scheduledProbe) {
+	// A task-boundary recovery keeps one prober panic from terminating a worker
+	// or directly changing endpoint health.
 	defer func() {
 		if recover() != nil && !c.stopped.Load() && !item.reg.retired.Load() {
 			c.reschedules.Add(1)
@@ -306,6 +335,8 @@ func initialProbeJitter(target ProbeTarget) time.Duration {
 	return time.Duration(digest.Sum64() % uint64(window))
 }
 
+// Stats returns a bounded point-in-time snapshot of coordinator gauges and
+// cumulative reschedules.
 func (c *HealthCoordinator) Stats() HealthCoordinatorStats {
 	c.mu.Lock()
 	scheduled := len(c.scheduled)
@@ -318,12 +349,17 @@ func (c *HealthCoordinator) Stats() HealthCoordinatorStats {
 	}
 }
 
+// StopHealth idempotently prevents future probe processing and scheduling. It
+// does not wait for scheduler or worker goroutines; Close performs that wait.
 func (c *HealthCoordinator) StopHealth() {
 	if c != nil && c.stopped.CompareAndSwap(false, true) {
 		c.signalWake()
 	}
 }
 
+// Close idempotently stops scheduling, cancels in-flight probes, closes idle
+// probe connections, and waits for scheduler and workers. It returns an error
+// wrapping ctx.Err when the supplied context expires first.
 func (c *HealthCoordinator) Close(ctx context.Context) error {
 	if c == nil {
 		return nil

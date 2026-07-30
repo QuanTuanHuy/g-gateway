@@ -14,6 +14,9 @@ func newTCPProber() *tcpProber {
 	return &tcpProber{}
 }
 
+// Probe dials the target TCP authority within the configured timeout, closes a
+// successful connection immediately, and reports reachability only; success
+// does not establish HTTP or application health.
 func (p *tcpProber) Probe(parent context.Context, target ProbeTarget) (result ProbeResult) {
 	started := time.Now()
 	result = ProbeResult{
@@ -42,4 +45,6 @@ func (p *tcpProber) Probe(parent context.Context, target ProbeTarget) (result Pr
 	return result
 }
 
+// CloseIdleConnections is an idempotent no-op because TCP probes retain no
+// idle connection pool.
 func (p *tcpProber) CloseIdleConnections() {}

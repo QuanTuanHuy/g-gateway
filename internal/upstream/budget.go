@@ -17,6 +17,8 @@ type retryBudget struct {
 	maxObserved atomic.Uint32
 }
 
+// RetryPermit owns one in-flight retry slot. Its zero value is invalid; every
+// successfully acquired permit must be released exactly once.
 type RetryPermit struct {
 	budget   *retryBudget
 	released atomic.Bool
@@ -30,6 +32,8 @@ func newRetryBudget(policy model.RetryBudgetPolicy) *retryBudget {
 	}
 }
 
+// CreditPrimary adds the configured fixed-point credits for one primary
+// request, saturating at the burst cap. It is safe for concurrent use.
 func (b *retryBudget) CreditPrimary() {
 	for {
 		current := b.credits.Load()
@@ -46,6 +50,9 @@ func (b *retryBudget) CreditPrimary() {
 	}
 }
 
+// Acquire reserves an in-flight retry slot and consumes one whole retry token.
+// It fails without retaining a slot when either bound is unavailable. A nil or
+// disabled budget is represented by callers as no acquisition.
 func (b *retryBudget) Acquire() (RetryPermit, bool) {
 	for {
 		current := b.inflight.Load()
@@ -70,6 +77,8 @@ func (b *retryBudget) Acquire() (RetryPermit, bool) {
 	}
 }
 
+// Release returns the permit's in-flight slot. It panics for a nil or zero
+// permit and when the same permit is released more than once.
 func (p *RetryPermit) Release() {
 	if p == nil || p.budget == nil {
 		panic("upstream: release invalid retry permit")
@@ -89,14 +98,19 @@ func (b *retryBudget) recordMaxObserved(value uint32) {
 	}
 }
 
+// MaxObservedInflight returns the largest concurrent retry count observed
+// since the budget was created.
 func (b *retryBudget) MaxObservedInflight() uint32 {
 	return b.maxObserved.Load()
 }
 
+// Inflight returns the current number of acquired retry permits.
 func (b *retryBudget) Inflight() uint32 {
 	return b.inflight.Load()
 }
 
+// Credits returns the current fixed-point credit balance, where 1000 credits
+// permit one retry.
 func (b *retryBudget) Credits() uint64 {
 	return b.credits.Load()
 }

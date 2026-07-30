@@ -29,6 +29,9 @@ func newHTTPProber() *httpProber {
 	}
 }
 
+// Probe performs one HTTP GET using a dedicated probe transport, does not
+// follow redirects, classifies configured status sets and timeout/transport
+// failures, and drains at most 4 KiB plus one byte before closing the body.
 func (p *httpProber) Probe(parent context.Context, target ProbeTarget) (result ProbeResult) {
 	started := time.Now()
 	observation := Observation{Source: SourceActive, Kind: OutcomeTransportFailure}
@@ -78,6 +81,8 @@ func (p *httpProber) Probe(parent context.Context, target ProbeTarget) (result P
 	return result
 }
 
+// CloseIdleConnections idempotently closes idle connections owned by the HTTP
+// probe transport.
 func (p *httpProber) CloseIdleConnections() {
 	p.transport.CloseIdleConnections()
 }

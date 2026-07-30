@@ -258,7 +258,8 @@ type RetryBudgetPolicy struct {
 	// RatioPer1000 adds this many fixed-point credits per primary request; 1000
 	// credits permit one retry.
 	RatioPer1000 uint16
-	// Burst is both the initial whole-retry allowance and the token-bucket cap.
+	// Burst is the maximum whole-retry capacity accumulated by the token
+	// bucket; a new budget starts empty.
 	Burst uint16
 	// MaxInflight is the maximum number of concurrent retry attempts.
 	MaxInflight uint16
