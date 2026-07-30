@@ -9,6 +9,7 @@ import (
 	"sync"
 )
 
+// ErrInvalidQuery identifies malformed percent-escaping in a request query.
 var ErrInvalidQuery = errors.New("invalid encoded query")
 
 type evaluation struct {

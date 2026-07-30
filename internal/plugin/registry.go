@@ -9,24 +9,41 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 )
 
+// CompiledPlugin contains immutable hooks and request scratch requirements
+// produced by a Definition.
 type CompiledPlugin struct {
-	Request      RequestHook
-	Response     ResponseHook
+	// Request is the optional request-phase hook.
+	Request RequestHook
+	// Response is the optional response-phase hook.
+	Response ResponseHook
+	// ScratchSlots is the non-negative number of request-owned scratch entries
+	// reserved for this plugin.
 	ScratchSlots int
 }
 
+// Definition describes one versioned plugin compiler and its deterministic
+// request and response ordering.
 type Definition struct {
-	Name          string
-	Version       string
-	RequestOrder  int
+	// Name uniquely identifies the plugin within a registry.
+	Name string
+	// Version labels the implementation version; the registry requires it but
+	// does not interpret it.
+	Version string
+	// RequestOrder orders request hooks in ascending order.
+	RequestOrder int
+	// ResponseOrder orders response hooks in ascending order.
 	ResponseOrder int
-	Compile       func(json.RawMessage) (CompiledPlugin, error)
+	// Compile validates raw JSON and returns an immutable compiled plugin.
+	Compile func(json.RawMessage) (CompiledPlugin, error)
 }
 
+// Registry contains an immutable set of validated plugin definitions.
 type Registry struct {
 	definitions map[string]Definition
 }
 
+// NewBuiltinRegistry returns a registry containing the request-ID and
+// header-rewrite plugins.
 func NewBuiltinRegistry() (*Registry, error) {
 	return NewRegistry(
 		requestIDDefinition(rand.Reader),
@@ -34,6 +51,9 @@ func NewBuiltinRegistry() (*Registry, error) {
 	)
 }
 
+// NewRegistry validates definitions and returns an immutable registry. It
+// rejects missing metadata or compilers, duplicate names, and colliding request
+// or response order values.
 func NewRegistry(definitions ...Definition) (*Registry, error) {
 	registry := &Registry{definitions: make(map[string]Definition, len(definitions))}
 	requestOrders := make(map[int]string, len(definitions))
@@ -74,6 +94,10 @@ func NewRegistry(definitions ...Definition) (*Registry, error) {
 	return registry, nil
 }
 
+// CompileChain validates and compiles service and route attachments into an
+// immutable Chain. Enabled route attachments replace same-named service
+// attachments, while disabled route attachments remove them. Input
+// configuration bytes are cloned before compilation.
 func (r *Registry) CompileChain(service, route []model.PluginAttachment) (*Chain, error) {
 	if r == nil {
 		return nil, fmt.Errorf("plugin registry is nil")

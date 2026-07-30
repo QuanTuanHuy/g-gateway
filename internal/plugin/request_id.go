@@ -59,6 +59,9 @@ func requestIDDefinition(random io.Reader) Definition {
 	}
 }
 
+// OnRequest preserves one valid inbound request ID or replaces missing,
+// repeated, oversized, or invalid input with a generated UUID, then records it
+// in the request state and configured header.
 func (p *requestIDPlugin) OnRequest(state *requestctx.Context, request *http.Request) RequestResult {
 	values := request.Header.Values(p.headerName)
 	requestID := ""
@@ -76,6 +79,8 @@ func (p *requestIDPlugin) OnRequest(state *requestctx.Context, request *http.Req
 	return RequestResult{Action: Continue}
 }
 
+// OnResponse restores the request ID recorded by OnRequest to the configured
+// response header, after earlier response hooks have run.
 func (p *requestIDPlugin) OnResponse(state *requestctx.Context, response *http.Response) error {
 	if response.Header == nil {
 		response.Header = make(http.Header)

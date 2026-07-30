@@ -23,6 +23,8 @@ type rewriteDirection struct {
 
 type headerValues []string
 
+// UnmarshalJSON accepts either one header-value string or a non-empty array of
+// strings and replaces v with an independently owned slice.
 func (v *headerValues) UnmarshalJSON(data []byte) error {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
@@ -170,6 +172,8 @@ func validStaticHeaderValue(value string) bool {
 	return true
 }
 
+// OnRequest applies the compiled remove, set, and add operations to request
+// headers in that order.
 func (r *compiledRewrite) OnRequest(_ *requestctx.Context, request *http.Request) RequestResult {
 	if request.Header == nil {
 		request.Header = make(http.Header)
@@ -178,6 +182,8 @@ func (r *compiledRewrite) OnRequest(_ *requestctx.Context, request *http.Request
 	return RequestResult{Action: Continue}
 }
 
+// OnResponse applies the compiled remove, set, and add operations to response
+// headers in that order.
 func (r *compiledRewrite) OnResponse(_ *requestctx.Context, response *http.Response) error {
 	if response.Header == nil {
 		response.Header = make(http.Header)
