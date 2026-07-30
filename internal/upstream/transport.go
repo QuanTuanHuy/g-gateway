@@ -63,10 +63,14 @@ func newTransportRuntime(config model.TransportConfig) *transportRuntime {
 	}
 }
 
+// RoundTrip sends one HTTP/1.1 request through the shared upstream transport
+// and returns the transport's response or error.
 func (r *transportRuntime) RoundTrip(request *http.Request) (*http.Response, error) {
 	return r.transport.RoundTrip(request)
 }
 
+// CloseIdleConnections idempotently closes idle connections owned by the
+// transport runtime.
 func (r *transportRuntime) CloseIdleConnections() {
 	r.closeOnce.Do(func() {
 		if r.closeIdleConnections != nil {

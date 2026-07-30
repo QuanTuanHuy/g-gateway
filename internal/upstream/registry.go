@@ -52,13 +52,25 @@ type resourceRefs struct {
 	budgetKeys    []budgetKey
 }
 
+// RegistryOptions configures bounded retired generations, active-health
+// workers, the ready queue, and optional lifecycle observation.
 type RegistryOptions struct {
+	// MaxRetiredSnapshots bounds plan sets retained while request references
+	// drain and must be between 1 and 1024.
 	MaxRetiredSnapshots int
-	HealthWorkers       int
+	// HealthWorkers is the fixed active-health worker count and must be between
+	// 1 and 256.
+	HealthWorkers int
+	// HealthQueueCapacity bounds ready probes and must be between 1 and 65536.
 	HealthQueueCapacity int
-	Observer            Observer
+	// Observer receives bounded synchronous lifecycle events; nil disables
+	// observation.
+	Observer Observer
 }
 
+// Registry transactionally prepares and shares endpoint, transport, selection,
+// health, and retry runtimes across immutable plan sets. It is safe for
+// concurrent use and owns background health and reaper goroutines until Close.
 type Registry struct {
 	mu                  sync.Mutex
 	maxRetiredSnapshots int
@@ -79,6 +91,9 @@ type Registry struct {
 	stopReaperOnce      sync.Once
 }
 
+// Candidate owns all resources acquired by one successful Prepare transaction.
+// Exactly one terminal Commit or Rollback should follow; subsequent terminal
+// calls are idempotent no-ops.
 type Candidate struct {
 	registry *Registry
 	plans    map[string]*Plan
@@ -87,6 +102,8 @@ type Candidate struct {
 	done     atomic.Bool
 }
 
+// NewRegistry validates options, starts the bounded health coordinator and
+// asynchronous reaper, and returns their owning Registry.
 func NewRegistry(options RegistryOptions) (*Registry, error) {
 	if options.MaxRetiredSnapshots < 1 || options.MaxRetiredSnapshots > 1024 {
 		return nil, fmt.Errorf("max retired snapshots must be between 1 and 1024")
@@ -115,6 +132,16 @@ func NewRegistry(options RegistryOptions) (*Registry, error) {
 	return registry, nil
 }
 
+// Prepare normalizes resources and transactionally acquires every runtime
+// needed by a candidate plan set. It reuses resources by their canonical keys,
+// rolls back all acquisitions on failure, and leaves committed plan sets
+// unchanged. The caller must Commit or Rollback a successful candidate.
+// Normalize may rewrite nested input state; clone resources first when the
+// input must be preserved.
+//
+// Prepare returns stable ConfigError codes for closed registries, retained
+// generation backpressure, invalid configuration, and balancer budget
+// overflow.
 func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 	if err := r.prepareAllowed(); err != nil {
 		r.notifyError(err.Code, err)
@@ -313,12 +340,16 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 	return plan, nil
 }
 
+// Stats returns a point-in-time snapshot of registry resource and plan-set
+// gauges.
 func (r *Registry) Stats() RegistryStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.statsLocked()
 }
 
+// ResilienceStats returns current per-upstream health and retry gauges sorted
+// by upstream ID.
 func (r *Registry) ResilienceStats() []ResilienceStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -359,6 +390,8 @@ func (r *Registry) ResilienceStats() []ResilienceStats {
 	return result
 }
 
+// HealthCoordinatorStats returns current scheduler statistics, or the zero
+// value for a nil registry or coordinator.
 func (r *Registry) HealthCoordinatorStats() HealthCoordinatorStats {
 	if r == nil || r.coordinator == nil {
 		return HealthCoordinatorStats{}
@@ -378,6 +411,11 @@ func (r *Registry) statsLocked() RegistryStats {
 	}
 }
 
+// Close prevents future preparation, reaps retired plan sets, stops the reaper,
+// and closes the health coordinator after all active and acquired plan-set
+// references are released. It is context-aware and returns an error equal to or
+// wrapping ctx.Err when cleanup cannot finish before the deadline. Callers
+// must retire active plan sets before expecting Close to complete.
 func (r *Registry) Close(ctx context.Context) error {
 	r.mu.Lock()
 	r.closed = true
@@ -434,6 +472,7 @@ func (r *Registry) prepareErrorLocked() *ConfigError {
 	return nil
 }
 
+// Plan returns the prepared immutable plan identified by id.
 func (c *Candidate) Plan(id string) (*Plan, bool) {
 	if c == nil {
 		return nil, false
@@ -442,6 +481,9 @@ func (c *Candidate) Plan(id string) (*Plan, bool) {
 	return plan, ok
 }
 
+// Commit atomically transfers the candidate's resource ownership to a new
+// PlanSet with one initial owner reference. It returns nil after any earlier
+// Commit or Rollback.
 func (c *Candidate) Commit() *PlanSet {
 	if c == nil || !c.done.CompareAndSwap(false, true) {
 		return nil
@@ -459,6 +501,9 @@ func (c *Candidate) Commit() *PlanSet {
 	return set
 }
 
+// Rollback idempotently releases every candidate-owned resource, closes newly
+// unreferenced transports outside the registry mutex, and reports cleanup to
+// the observer. It is a no-op after Commit or an earlier Rollback.
 func (c *Candidate) Rollback() {
 	if c == nil || !c.done.CompareAndSwap(false, true) {
 		return
@@ -492,6 +537,9 @@ func (r *Registry) releaseRefs(owned resourceRefs) (CleanupStats, []*transportRu
 }
 
 func (r *Registry) releaseRefsLocked(owned resourceRefs) (CleanupStats, []*transportRuntime) {
+	// Each key in owned represents exactly one acquired reference. Terminal
+	// candidate actions and final plan-set reaping clear owned after this
+	// function so no reference can be decremented twice.
 	cleanup := CleanupStats{}
 	for _, identity := range owned.endpointIDs {
 		entry := r.endpoints[identity]
@@ -555,6 +603,8 @@ func (r *Registry) releaseRefsLocked(owned resourceRefs) (CleanupStats, []*trans
 	return cleanup, transports
 }
 
+// StopHealth idempotently prevents future active-health scheduling without
+// closing the registry or waiting for workers.
 func (r *Registry) StopHealth() {
 	if r != nil && r.coordinator != nil {
 		r.coordinator.StopHealth()
@@ -562,6 +612,8 @@ func (r *Registry) StopHealth() {
 }
 
 func closeTransports(transports []*transportRuntime) {
+	// Transport cleanup is intentionally performed after releasing the
+	// registry mutex because net/http may do non-trivial pool work.
 	for _, transport := range transports {
 		transport.CloseIdleConnections()
 	}

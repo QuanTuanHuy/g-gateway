@@ -740,7 +740,7 @@ git commit -m "docs: document upstream health and retry contracts"
   methods, `PlanSet`, `PlanSet.Plan`, `TryAcquire`, `Release`, `Retire`.
 - Registry: `RegistryOptions`, `Registry`, `Candidate`, `NewRegistry`,
   `Registry.Prepare`, `Stats`, `ResilienceStats`, `HealthCoordinatorStats`,
-  `Close`, and candidate `Plan`, `Commit`, `Rollback`, `StopHealth`.
+  `Close`, `StopHealth`, and candidate `Plan`, `Commit`, `Rollback`.
 - Transport: exported `RoundTrip` and `CloseIdleConnections` methods.
 
 - [ ] **Step 1: Prove the final upstream slice still fails**
