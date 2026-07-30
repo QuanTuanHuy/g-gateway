@@ -1,3 +1,8 @@
+// Package testupstream provides a deterministic HTTP handler for gateway
+// correctness, streaming, cancellation, connection, and lifecycle tests.
+//
+// Its fixed routes cover bounded bodies, full-duplex echo, headers, streaming,
+// delays, status codes, trailers, forced connection closure, and debug state.
 package testupstream
 
 import (
@@ -37,6 +42,9 @@ type headersResponse struct {
 	Headers    http.Header `json:"headers"`
 }
 
+// New returns an independently usable handler with fresh request,
+// cancellation, and connection state. logger receives diagnostics from
+// streaming and forced-close endpoints and should be non-nil.
 func New(logger *slog.Logger) http.Handler {
 	state := &server{
 		logger:      logger,
@@ -112,6 +120,9 @@ func boundedDelay(response http.ResponseWriter, raw string) (time.Duration, bool
 	return duration, true
 }
 
+// ServeHTTP executes the package's fixed endpoint contract. Non-debug requests
+// increment request and unique remote-connection state; debug requests inspect
+// or reset that state without contributing to it.
 func (s *server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	if !strings.HasPrefix(request.URL.Path, "/debug/") {
 		s.requests.Add(1)

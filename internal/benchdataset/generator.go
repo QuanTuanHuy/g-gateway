@@ -14,57 +14,102 @@ import (
 )
 
 const (
+	// SchemaVersion is the metadata schema emitted with generated datasets.
 	SchemaVersion     = 1
 	benchmarkService  = "bench-service"
 	benchmarkUpstream = "bench-upstream"
 )
 
+// Options controls deterministic benchmark dataset generation.
 type Options struct {
-	RouteCount       int
-	Seed             int64
-	Endpoint         string
+	// RouteCount is either one for a sentinel baseline or at least five for a
+	// distributed dataset.
+	RouteCount int
+	// Seed controls deterministic route ordering.
+	Seed int64
+	// Endpoint is the absolute HTTP URL used by the generated upstream.
+	Endpoint string
+	// BaselineSentinel selects "first", "middle", or "last" when RouteCount
+	// is one; it must otherwise be empty.
 	BaselineSentinel string
 }
 
+// HostCounts records the exact host-match distribution across all routes.
 type HostCounts struct {
-	Exact    int `json:"exact"`
+	// Exact is the number of routes with an exact host.
+	Exact int `json:"exact"`
+	// Wildcard is the number of routes with a wildcard host.
 	Wildcard int `json:"wildcard"`
+	// Hostless is the number of routes without a host constraint.
 	Hostless int `json:"hostless"`
 }
 
+// PathCounts records the path-pattern distribution across all routes.
 type PathCounts struct {
-	Static    int `json:"static"`
+	// Static is the number of exact static paths.
+	Static int `json:"static"`
+	// Parameter is the number of paths with one named parameter.
 	Parameter int `json:"parameter"`
-	Prefix    int `json:"prefix"`
-	CatchAll  int `json:"catch_all"`
+	// Prefix is the number of prefix-wildcard paths.
+	Prefix int `json:"prefix"`
+	// CatchAll is the number of named catch-all paths.
+	CatchAll int `json:"catch_all"`
 }
 
+// MethodCounts records the method distribution across all routes.
 type MethodCounts struct {
+	// Standard is the number of routes using GET, POST, PUT, or DELETE.
 	Standard int `json:"standard"`
-	Custom   int `json:"custom"`
+	// Custom is the number of routes using generated BENCH methods.
+	Custom int `json:"custom"`
 }
 
+// Sentinel identifies one stable correctness route shared by rendered targets.
 type Sentinel struct {
+	// RouteID is the sentinel's canonical route identifier.
 	RouteID string `json:"route_id"`
-	Host    string `json:"host"`
-	Path    string `json:"path"`
-	URL     string `json:"url"`
+	// Host is the exact host required to match the sentinel.
+	Host string `json:"host"`
+	// Path is the exact path required to match the sentinel.
+	Path string `json:"path"`
+	// URL is the equivalent absolute request URL.
+	URL string `json:"url"`
 }
 
+// Metadata describes one generated dataset and its exact route distributions.
 type Metadata struct {
-	SchemaVersion   int                 `json:"schema_version"`
-	Seed            int64               `json:"seed"`
-	RouteCount      int                 `json:"route_count"`
-	Checksum        string              `json:"checksum"`
-	HostCounts      HostCounts          `json:"host_counts"`
-	PathCounts      PathCounts          `json:"path_counts"`
-	MethodCounts    MethodCounts        `json:"method_counts"`
-	PredicateRoutes int                 `json:"predicate_routes"`
-	ServiceRoutes   int                 `json:"service_routes"`
-	PluginCounts    map[string]int      `json:"plugin_counts"`
-	Sentinels       map[string]Sentinel `json:"sentinels"`
+	// SchemaVersion identifies the metadata schema.
+	SchemaVersion int `json:"schema_version"`
+	// Seed is the deterministic ordering seed supplied to Generate.
+	Seed int64 `json:"seed"`
+	// RouteCount is the total number of generated routes.
+	RouteCount int `json:"route_count"`
+	// Checksum is the lowercase SHA-256 hex digest of canonically ID-sorted
+	// resources.
+	Checksum string `json:"checksum"`
+	// HostCounts is the complete host-match distribution.
+	HostCounts HostCounts `json:"host_counts"`
+	// PathCounts is the complete path-pattern distribution.
+	PathCounts PathCounts `json:"path_counts"`
+	// MethodCounts is the complete method distribution.
+	MethodCounts MethodCounts `json:"method_counts"`
+	// PredicateRoutes is the number of routes with one header or query
+	// predicate.
+	PredicateRoutes int `json:"predicate_routes"`
+	// ServiceRoutes is the number of routes resolving through the generated
+	// service rather than directly to the upstream.
+	ServiceRoutes int `json:"service_routes"`
+	// PluginCounts maps each supported plugin name to its attachment count.
+	PluginCounts map[string]int `json:"plugin_counts"`
+	// Sentinels maps stable position names to equivalent correctness routes.
+	Sentinels map[string]Sentinel `json:"sentinels"`
 }
 
+// Generate validates options and returns an independently owned deterministic
+// resource set and matching metadata. Standard datasets preserve exact
+// distribution totals while deterministically shuffling route order; one-route
+// datasets contain only the requested direct, plugin-free sentinel. On error,
+// Generate returns zero resource and metadata values.
 func Generate(options Options) (model.ResourceSet, Metadata, error) {
 	if err := validateOptions(options); err != nil {
 		return model.ResourceSet{}, Metadata{}, err

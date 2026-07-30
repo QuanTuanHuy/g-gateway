@@ -12,14 +12,27 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// GatewayRenderOptions overrides listener and TLS paths in rendered gateway
+// bootstrap configuration. Empty fields select benchmark defaults.
 type GatewayRenderOptions struct {
-	HTTPAddress     string
-	HTTPSAddress    string
-	AdminAddress    string
+	// HTTPAddress is the cleartext listener address; the default is ":8080".
+	HTTPAddress string
+	// HTTPSAddress is the TLS listener address; the default is ":8443".
+	HTTPSAddress string
+	// AdminAddress is the telemetry listener address; the default is ":9090".
+	AdminAddress string
+	// CertificateFile is the certificate path visible to the gateway; the
+	// default is "/certs/server.crt".
 	CertificateFile string
-	PrivateKeyFile  string
+	// PrivateKeyFile is the private-key path visible to the gateway; the
+	// default is "/certs/server.key".
+	PrivateKeyFile string
 }
 
+// RenderGateway translates resources into strict gateway/v1alpha2 YAML with
+// benchmark metadata comments and fixed benchmark server and telemetry
+// settings. It preserves resource order, does not mutate resources, and
+// returns no bytes when plugin translation or YAML encoding fails.
 func RenderGateway(
 	resources model.ResourceSet,
 	metadata Metadata,
@@ -107,6 +120,10 @@ func RenderGateway(
 	return addMetadataComments(rendered, metadata, false), nil
 }
 
+// RenderAPISIX translates resources and supported built-in plugins into
+// standalone APISIX YAML using the equivalent parameter-aware router and
+// round-robin upstreams. It preserves resource order, appends the standalone
+// "#END" marker, does not mutate resources, and returns no bytes on error.
 func RenderAPISIX(resources model.ResourceSet, metadata Metadata) ([]byte, error) {
 	document := apisixDocument{
 		Deployment: apisixDeployment{
