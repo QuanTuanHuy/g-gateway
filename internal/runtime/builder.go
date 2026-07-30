@@ -10,11 +10,14 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
+// Builder compiles validated canonical resources into immutable snapshots
+// using one plugin registry and a separately prepared upstream candidate.
 type Builder struct {
 	plugins     *plugin.Registry
 	beforeBuild func(uint64)
 }
 
+// NewBuilder returns a Builder using plugins and rejects a nil registry.
 func NewBuilder(plugins *plugin.Registry) (*Builder, error) {
 	if plugins == nil {
 		return nil, fmt.Errorf("plugin registry is required")
@@ -22,6 +25,11 @@ func NewBuilder(plugins *plugin.Registry) (*Builder, error) {
 	return &Builder{plugins: plugins}, nil
 }
 
+// Build clones and validates input, resolves references, compiles plugin chains
+// and routing, and returns an immutable snapshot for revision. It does not
+// commit or roll back candidate; the caller retains that transaction
+// responsibility. Any failure returns a stage-specific BuildError and no
+// usable snapshot.
 func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *upstream.Candidate) (*Snapshot, error) {
 	if b.beforeBuild != nil {
 		b.beforeBuild(revision)

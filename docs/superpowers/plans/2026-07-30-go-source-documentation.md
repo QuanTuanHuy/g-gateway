@@ -846,8 +846,9 @@ git commit -m "docs: document upstream lifecycle and ownership"
   stage constants, `BuildError`, its methods, `Observer`, `Manager`, `Lease`,
   constructor and manager methods, `Lease.Snapshot`, `Lease.Release`, `Stats`,
   `CompiledRoute`, `Snapshot`, `Match`, and all exported snapshot/route methods.
-- Proxy: `RuntimeOptions`, `Error`, `Error.Unwrap`, `NewRuntime`,
-  `ServeHTTP`, `Allow`, and exported `RoundTrip` on the route transport.
+- Proxy: `RuntimeOptions`, `NewRuntime`, exported `Error` and `Unwrap` on the
+  response-plugin wrapper, `ServeHTTP`, `Allow`, and exported `RoundTrip` on
+  the route transport.
 - Audit 21 exported fields across both packages.
 
 - [ ] **Step 1: Prove both package baselines fail**

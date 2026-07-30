@@ -5,25 +5,42 @@ import (
 	"strings"
 )
 
+// BuildStage identifies the phase that rejected a snapshot build.
 type BuildStage string
 
 const (
+	// StageValidate covers revision, resource, and manager precondition
+	// validation.
 	StageValidate BuildStage = "validate"
-	StageResolve  BuildStage = "resolve"
-	StagePlugin   BuildStage = "plugin_compile"
-	StageRouter   BuildStage = "router_compile"
+	// StageResolve covers cross-resource and prepared-upstream resolution.
+	StageResolve BuildStage = "resolve"
+	// StagePlugin covers plugin-chain compilation.
+	StagePlugin BuildStage = "plugin_compile"
+	// StageRouter covers deterministic router compilation.
+	StageRouter BuildStage = "router_compile"
 )
 
+// BuildError is a stable coded snapshot-build error with optional resource and
+// field context.
 type BuildError struct {
-	Code         string
-	Stage        BuildStage
-	Revision     uint64
+	// Code is the stable machine-readable failure category.
+	Code string
+	// Stage identifies the build phase that failed.
+	Stage BuildStage
+	// Revision is the candidate revision.
+	Revision uint64
+	// ResourceKind identifies the affected resource kind, when applicable.
 	ResourceKind string
-	ResourceID   string
-	Field        string
-	Cause        error
+	// ResourceID identifies the affected resource, when applicable.
+	ResourceID string
+	// Field is the canonical path of the invalid or unresolved value.
+	Field string
+	// Cause contains the underlying validation or compilation error.
+	Cause error
 }
 
+// Error formats the stable code and available stage, revision, resource, field,
+// and cause context. It returns "<nil>" for a nil receiver.
 func (e *BuildError) Error() string {
 	if e == nil {
 		return "<nil>"
@@ -54,6 +71,7 @@ func (e *BuildError) Error() string {
 	return message
 }
 
+// Unwrap returns the underlying build cause, or nil for a nil receiver.
 func (e *BuildError) Unwrap() error {
 	if e == nil {
 		return nil

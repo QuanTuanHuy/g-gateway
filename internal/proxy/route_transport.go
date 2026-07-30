@@ -10,6 +10,14 @@ import (
 
 type routeTransport struct{}
 
+// RoundTrip executes one bounded gateway attempt transaction. It activates
+// health, credits one primary request, selects distinct healthy or unknown
+// endpoints, reconstructs replayable bodies for retries, acquires and releases
+// retry permits, drains at most 32 KiB plus one detection byte from retryable
+// responses, observes every transport attempt, and returns the final response
+// or transport error. Client
+// cancellation, total-deadline expiry, non-replayable bodies, budget
+// exhaustion, and lack of an untried endpoint suppress further retries.
 func (routeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	state, ok := requestctx.From(request.Context())
 	if !ok || state.Runtime == nil {

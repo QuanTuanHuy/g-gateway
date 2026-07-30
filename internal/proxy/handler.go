@@ -22,10 +22,18 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
+// RuntimeOptions supplies the required snapshot manager, request-body limit,
+// and optional structured logger for a proxy handler.
 type RuntimeOptions struct {
-	Snapshots           *gatewayruntime.Manager
+	// Snapshots is the required source of leased runtime snapshots.
+	Snapshots *gatewayruntime.Manager
+	// MaxRequestBodyBytes is the positive downstream request-body limit in
+	// bytes. Known oversized bodies are rejected before proxying; streaming
+	// bodies are bounded while read.
 	MaxRequestBodyBytes int64
-	Logger              *slog.Logger
+	// Logger receives rate-limited upstream failures; nil selects a discard
+	// logger.
+	Logger *slog.Logger
 }
 
 type handler struct {
@@ -40,14 +48,20 @@ type responsePluginError struct {
 	err error
 }
 
+// Error returns the wrapped response-plugin error text.
 func (e *responsePluginError) Error() string {
 	return e.err.Error()
 }
 
+// Unwrap returns the underlying response-plugin error for errors.Is and
+// errors.As.
 func (e *responsePluginError) Unwrap() error {
 	return e.err
 }
 
+// NewRuntime validates options and returns an HTTP handler that leases one
+// immutable snapshot per request. It rejects a nil snapshot manager and a
+// non-positive request-body limit.
 func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 	if options.Snapshots == nil {
 		return nil, fmt.Errorf("snapshot manager must not be nil")
@@ -86,6 +100,11 @@ func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 	return handler, nil
 }
 
+// ServeHTTP leases one snapshot, distinguishes 404 from sorted 405 Allow
+// responses, runs request and final-response plugins, and streams proxy bodies.
+// The effective total timeout is bounded by any earlier client deadline and
+// covers selection, all attempts, and response streaming. Failures before a
+// response is committed map to stable gateway status and error codes.
 func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	lease, ok := h.snapshots.Acquire()
 	if !ok {
@@ -322,6 +341,8 @@ type errorLogLimiter struct {
 	nextLog time.Time
 }
 
+// Allow permits at most one upstream error log per one-second window and is
+// safe for concurrent use.
 func (l *errorLogLimiter) Allow(now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

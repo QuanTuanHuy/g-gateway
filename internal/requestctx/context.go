@@ -54,7 +54,8 @@ type SnapshotRef interface {
 // Its methods coordinate shared retry, selection, health, and response-plugin
 // state while the owning snapshot lease remains held.
 type RuntimeRoute interface {
-	// RetryPolicy returns an independently owned effective retry policy.
+	// RetryPolicy returns the effective retry policy. Its slices are borrowed
+	// immutable data and must not be modified.
 	RetryPolicy() model.RetryPolicy
 	// ActivateUpstream lazily starts active health work for the route's
 	// upstream.
