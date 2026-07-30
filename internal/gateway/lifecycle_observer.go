@@ -21,6 +21,8 @@ func newLifecycleObserver(telemetryRuntime *telemetry.Telemetry, logger *slog.Lo
 	}
 }
 
+// SnapshotApplied forwards bounded snapshot gauges and logs the published
+// revision, counts, and build duration.
 func (o *lifecycleObserver) SnapshotApplied(stats gatewayruntime.Stats) {
 	o.telemetry.SnapshotApplied(stats)
 	o.logger.Info(
@@ -34,6 +36,8 @@ func (o *lifecycleObserver) SnapshotApplied(stats gatewayruntime.Stats) {
 	)
 }
 
+// SnapshotRejected forwards bounded rejection metrics and logs only stable
+// error metadata plus build duration.
 func (o *lifecycleObserver) SnapshotRejected(buildErr *gatewayruntime.BuildError, duration time.Duration) {
 	o.telemetry.SnapshotRejected(buildErr, duration)
 	var (
@@ -58,6 +62,8 @@ func (o *lifecycleObserver) SnapshotRejected(buildErr *gatewayruntime.BuildError
 	)
 }
 
+// RegistryPrepared forwards resource deltas and logs bounded registry and
+// compilation counts.
 func (o *lifecycleObserver) RegistryPrepared(stats upstream.PrepareStats) {
 	o.telemetry.RegistryPrepared(stats)
 	o.logger.Info(
@@ -78,6 +84,8 @@ func (o *lifecycleObserver) RegistryPrepared(stats upstream.PrepareStats) {
 	)
 }
 
+// RegistryRolledBack forwards the rollback and logs bounded post-cleanup
+// counts.
 func (o *lifecycleObserver) RegistryRolledBack(stats upstream.PrepareStats) {
 	o.telemetry.RegistryRolledBack(stats)
 	o.logger.Warn(
@@ -93,10 +101,13 @@ func (o *lifecycleObserver) RegistryRolledBack(stats upstream.PrepareStats) {
 	)
 }
 
+// RegistryRetired forwards the current registry gauges.
 func (o *lifecycleObserver) RegistryRetired(stats upstream.RegistryStats) {
 	o.telemetry.RegistryRetired(stats)
 }
 
+// RegistryCleaned forwards cleanup deltas and logs bounded cleanup and current
+// registry counts.
 func (o *lifecycleObserver) RegistryCleaned(stats upstream.CleanupStats) {
 	o.telemetry.RegistryCleaned(stats)
 	o.logger.Info(
@@ -112,6 +123,7 @@ func (o *lifecycleObserver) RegistryCleaned(stats upstream.CleanupStats) {
 	)
 }
 
+// RegistryError logs the stable registry error code without raw error text.
 func (o *lifecycleObserver) RegistryError(code string, _ error) {
 	o.logger.Error(
 		"upstream_registry_error",
@@ -119,6 +131,7 @@ func (o *lifecycleObserver) RegistryError(code string, _ error) {
 	)
 }
 
+// ShutdownCleanup logs final bounded registry gauges after manager cleanup.
 func (o *lifecycleObserver) ShutdownCleanup(stats upstream.RegistryStats) {
 	o.logger.Info(
 		"upstream_shutdown_cleanup",

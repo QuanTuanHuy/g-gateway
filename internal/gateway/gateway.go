@@ -22,12 +22,20 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
+// Addresses contains the actual listener addresses bound by Start.
 type Addresses struct {
-	HTTP  string
+	// HTTP is the cleartext traffic listener address.
+	HTTP string
+	// HTTPS is the TLS traffic listener address.
 	HTTPS string
+	// Admin is the private telemetry listener address.
 	Admin string
 }
 
+// Gateway owns the HTTP, HTTPS, and admin servers together with telemetry and
+// immutable runtime resources. A Gateway must not be copied after first use.
+// After a successful Start, Apply, Wait, and Shutdown may be used concurrently;
+// Start must not race with Shutdown.
 type Gateway struct {
 	httpServer  *http.Server
 	httpsServer *http.Server
@@ -55,6 +63,10 @@ type Gateway struct {
 	shutdownErr  error
 }
 
+// New validates its non-nil logger, loads the configured TLS key pair,
+// constructs all runtime components, and activates resources as revision 1.
+// It returns no partially usable Gateway and cleans up owned components on any
+// construction failure.
 func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *slog.Logger) (*Gateway, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("logger must not be nil")
@@ -190,6 +202,9 @@ func (g *Gateway) trackTraffic(next http.Handler) http.Handler {
 	})
 }
 
+// Apply publishes a strictly newer immutable resource revision. It rejects
+// updates once Shutdown begins, and a rejected update leaves the last-known-
+// good snapshot active.
 func (g *Gateway) Apply(revision uint64, resources model.ResourceSet) error {
 	if g.closing.Load() {
 		return fmt.Errorf("GATEWAY_SHUTTING_DOWN: runtime updates are disabled")
@@ -197,6 +212,10 @@ func (g *Gateway) Apply(revision uint64, resources model.ResourceSet) error {
 	return g.manager.Apply(revision, resources)
 }
 
+// Start binds admin, HTTP, then HTTPS listeners and starts serving only after
+// all three binds succeed. It may succeed once, marks readiness only after
+// serving goroutines start, and returns the actual bound addresses. A failed
+// bind leaves readiness false and closes listeners opened by that call.
 func (g *Gateway) Start() (Addresses, error) {
 	g.startMu.Lock()
 	defer g.startMu.Unlock()
@@ -255,6 +274,9 @@ func (g *Gateway) serve(server *http.Server, listener net.Listener, name string)
 	}
 }
 
+// Wait blocks after a successful Start until a server exits unexpectedly or
+// all three servers stop. It returns the first reported serve error, or nil
+// after orderly termination.
 func (g *Gateway) Wait() error {
 	select {
 	case err := <-g.serveErrors:
@@ -264,6 +286,10 @@ func (g *Gateway) Wait() error {
 	}
 }
 
+// Shutdown begins an idempotent readiness-first shutdown. The first call's
+// context bounds graceful traffic drain and runtime cleanup; later calls return
+// that same result. On deadline expiry, traffic servers are force-closed before
+// final runtime and admin cleanup.
 func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.closing.Store(true)
 	g.shutdownOnce.Do(func() {

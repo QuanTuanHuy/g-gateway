@@ -8,8 +8,12 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
+// ResilienceStatsProvider supplies point-in-time upstream and scheduler
+// gauges to the Prometheus resilience collector.
 type ResilienceStatsProvider interface {
+	// ResilienceStats returns per-upstream health and retry gauges.
 	ResilienceStats() []upstream.ResilienceStats
+	// HealthCoordinatorStats returns health-scheduler gauges and counters.
 	HealthCoordinatorStats() upstream.HealthCoordinatorStats
 }
 
@@ -90,6 +94,7 @@ func newResilienceCollector(provider ResilienceStatsProvider) *resilienceCollect
 	}
 }
 
+// Describe sends the collector's fixed Prometheus descriptors to out.
 func (c *resilienceCollector) Describe(out chan<- *prometheus.Desc) {
 	for _, description := range []*prometheus.Desc{
 		c.healthEndpoints, c.healthTransitions, c.healthProbes,
@@ -101,6 +106,8 @@ func (c *resilienceCollector) Describe(out chan<- *prometheus.Desc) {
 	}
 }
 
+// Collect reads one point-in-time provider snapshot and sends metrics to out.
+// An empty provider emits a bounded "__none__" upstream series.
 func (c *resilienceCollector) Collect(out chan<- prometheus.Metric) {
 	stats := c.provider.ResilienceStats()
 	if len(stats) == 0 {
@@ -124,6 +131,9 @@ func (c *resilienceCollector) Collect(out chan<- prometheus.Metric) {
 	out <- prometheus.MustNewConstMetric(c.retrySuppressed, prometheus.CounterValue, 0, "none")
 }
 
+// RegisterResilienceProvider registers exactly one resilience collector backed
+// by provider. It rejects nil inputs and returns an error if an equivalent
+// collector has already been registered.
 func (t *Telemetry) RegisterResilienceProvider(provider ResilienceStatsProvider) error {
 	if t == nil || provider == nil {
 		return fmt.Errorf("resilience stats provider is required")

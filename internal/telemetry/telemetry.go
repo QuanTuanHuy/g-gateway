@@ -17,6 +17,8 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
+// Telemetry owns an isolated Prometheus registry, readiness state, and the
+// private admin HTTP handler. Its exported methods are safe for concurrent use.
 type Telemetry struct {
 	ready                 atomic.Bool
 	registry              *prometheus.Registry
@@ -41,6 +43,10 @@ type Telemetry struct {
 	adminHandler          http.Handler
 }
 
+// New constructs Telemetry with Go, process, runtime, and upstream metrics.
+// requestMetricsEnabled adds bounded request and selection series;
+// profilingEnabled exposes pprof routes on the admin handler. The returned
+// instance starts not ready.
 func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 	registry := prometheus.NewRegistry()
 	if err := registry.Register(collectors.NewGoCollector()); err != nil {
@@ -216,14 +222,23 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 	return telemetry, nil
 }
 
+// SetReady atomically controls whether /readyz returns 200 or 503. It does not
+// affect the always-live /healthz endpoint.
 func (t *Telemetry) SetReady(ready bool) {
 	t.ready.Store(ready)
 }
 
+// AdminHandler returns the private handler serving health, readiness, metrics,
+// and optional pprof endpoints. The handler is owned by Telemetry and is safe
+// for concurrent serving.
 func (t *Telemetry) AdminHandler() http.Handler {
 	return t.adminHandler
 }
 
+// Wrap instruments next with bounded request, latency, balancer, and hash
+// fallback metrics. Matched requests use the route ID and unmatched requests
+// use "__unmatched__". When request metrics are disabled, Wrap returns next
+// unchanged.
 func (t *Telemetry) Wrap(next http.Handler) http.Handler {
 	if !t.requestMetricsEnabled {
 		return next
@@ -253,6 +268,8 @@ func (t *Telemetry) Wrap(next http.Handler) http.Handler {
 	})
 }
 
+// SnapshotApplied records the active revision and compiled-resource gauges,
+// observes build duration, and increments the applied counter.
 func (t *Telemetry) SnapshotApplied(stats gatewayruntime.Stats) {
 	t.activeRevision.Set(float64(stats.Revision))
 	t.compiledRoutes.Set(float64(stats.RouteCount))
@@ -262,6 +279,8 @@ func (t *Telemetry) SnapshotApplied(stats gatewayruntime.Stats) {
 	t.snapshotApplyTotal.WithLabelValues("applied", "", "").Inc()
 }
 
+// SnapshotRejected observes build duration and increments the rejected counter
+// using only the bounded build stage and stable error code.
 func (t *Telemetry) SnapshotRejected(buildErr *gatewayruntime.BuildError, duration time.Duration) {
 	var stage, code string
 	if buildErr != nil {
@@ -272,6 +291,8 @@ func (t *Telemetry) SnapshotRejected(buildErr *gatewayruntime.BuildError, durati
 	t.snapshotApplyTotal.WithLabelValues("rejected", stage, code).Inc()
 }
 
+// RegistryPrepared adds created and reused resource deltas and replaces the
+// current registry gauges with the reported state.
 func (t *Telemetry) RegistryPrepared(stats upstream.PrepareStats) {
 	t.registryResources.WithLabelValues("created", "endpoint").Add(float64(stats.CreatedEndpoints))
 	t.registryResources.WithLabelValues("reused", "endpoint").Add(float64(stats.ReusedEndpoints))
@@ -282,15 +303,20 @@ func (t *Telemetry) RegistryPrepared(stats upstream.PrepareStats) {
 	t.setRegistryStats(stats.Current)
 }
 
+// RegistryRolledBack increments the rollback counter and replaces current
+// registry gauges with the reported post-rollback state.
 func (t *Telemetry) RegistryRolledBack(stats upstream.PrepareStats) {
 	t.registryRollbacks.Inc()
 	t.setRegistryStats(stats.Current)
 }
 
+// RegistryRetired replaces current registry gauges with the reported state.
 func (t *Telemetry) RegistryRetired(stats upstream.RegistryStats) {
 	t.setRegistryStats(stats)
 }
 
+// RegistryCleaned adds released-resource and transport-cleanup deltas and
+// replaces current registry gauges with the reported state.
 func (t *Telemetry) RegistryCleaned(stats upstream.CleanupStats) {
 	t.registryResources.WithLabelValues("released", "endpoint").Add(float64(stats.ReleasedEndpoints))
 	t.registryResources.WithLabelValues("released", "transport").Add(float64(stats.ReleasedTransports))
@@ -322,6 +348,9 @@ type metricsResponseWriter struct {
 	status int
 }
 
+// WriteHeader records the first final status code and forwards status to the
+// underlying writer. Informational 1xx responses do not become the recorded
+// final status.
 func (w *metricsResponseWriter) WriteHeader(status int) {
 	if status >= 200 && w.status == 0 {
 		w.status = status
@@ -329,6 +358,7 @@ func (w *metricsResponseWriter) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
+// Write records an implicit 200 status before forwarding data.
 func (w *metricsResponseWriter) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
@@ -336,6 +366,8 @@ func (w *metricsResponseWriter) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
+// Unwrap returns the underlying writer so http.ResponseController can recover
+// supported optional response-writer interfaces.
 func (w *metricsResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
