@@ -1,3 +1,6 @@
+// Package main implements the bench-dataset command, which generates
+// deterministic equivalent G-Gateway and APISIX benchmark configuration
+// artifacts.
 package main
 
 import (

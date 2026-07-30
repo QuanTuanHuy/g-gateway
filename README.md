@@ -75,11 +75,42 @@ Keep the admin listener on a private network. Profiling is disabled by default a
 
 ## Build and verify
 
-The canonical verification runs in the pinned Go container:
+Install the pinned documentation analyzers:
+
+```bash
+go install honnef.co/go/tools/cmd/staticcheck@2026.1
+go install github.com/mgechev/revive@v1.15.0
+```
+
+The canonical verification pipeline is:
+
+```bash
+test -z "$(gofmt -l .)" &&
+staticcheck -tests=false ./... &&
+revive -set_exit_status -config revive.toml -formatter default ./... &&
+go vet ./... &&
+go test ./... -race -count=1 &&
+go build ./cmd/...
+```
+
+The root `staticcheck.conf` intentionally enables only package-comment and
+existing-comment form checks. The root `revive.toml` enables only the missing
+exported-declaration check. Together they enforce Go documentation presence and
+form without enabling unrelated style policy.
+
+Run the same pipeline in the pinned Go container with the analyzers installed
+inside the disposable environment:
 
 ```bash
 docker run --rm -v "$PWD:/src" -w /src golang:1.26.5-bookworm sh -c \
-  'test -z "$(gofmt -l .)" && go vet ./... && go test ./... -race -count=1 && go build ./cmd/...'
+  'go install honnef.co/go/tools/cmd/staticcheck@2026.1 &&
+   go install github.com/mgechev/revive@v1.15.0 &&
+   test -z "$(gofmt -l .)" &&
+   staticcheck -tests=false ./... &&
+   revive -set_exit_status -config revive.toml -formatter default ./... &&
+   go vet ./... &&
+   go test ./... -race -count=1 &&
+   go build ./cmd/...'
 ```
 
 Build the runtime, test upstream, Phase 1 report command, and Phase 2 dataset command from the same multi-stage Dockerfile:

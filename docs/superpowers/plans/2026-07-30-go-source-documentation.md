@@ -1187,9 +1187,11 @@ Run:
 & (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./...
 ```
 
-Expected: Staticcheck fails only with `ST1000` diagnostics for the four
-`cmd/*` packages, and Revive reports no `internal/` diagnostics. Any diagnostic
-under `internal/` must be fixed in its owning earlier task before continuing.
+Expected: both gates pass. Staticcheck exempts command packages from `ST1000`,
+and the narrow Revive gate checks exported declarations rather than package
+comments, so the four command comments remain an explicit inventory item. Any
+diagnostic under `internal/` must be fixed in its owning earlier task before
+continuing.
 
 - [ ] **Step 2: Document each command package**
 

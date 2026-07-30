@@ -1,3 +1,6 @@
+// Package main implements the gateway-dp command, which runs the G-Gateway data
+// plane from a versioned configuration file until shutdown or an unrecoverable
+// listener error.
 package main
 
 import (
