@@ -4,9 +4,17 @@
 
 **Goal:** Backfill idiomatic, contract-focused Go source documentation across every production package and enforce its continued completeness in CI.
 
-**Architecture:** Work in dependency order so each package's vocabulary is documented before its consumers. Add package and declaration comments without changing behavior or signatures, verify each package slice independently, and enable the repository-wide Staticcheck gate only after the baseline is clean.
+**Architecture:** Work in dependency order so each package's vocabulary is documented before its consumers. Add package and declaration comments without changing behavior or signatures, verify each package slice independently, and enable the repository-wide Staticcheck and Revive gates only after the baseline is clean.
 
-**Tech Stack:** Go 1.26.5, Go doc comments, `gofmt`, `go doc`, Staticcheck 2026.1, `go vet`, `go test`, GitHub Actions.
+**Tech Stack:** Go 1.26.5, Go doc comments, `gofmt`, `go doc`, Staticcheck 2026.1, Revive v1.15.0, `go vet`, `go test`, GitHub Actions.
+
+> **Approved gate correction (2026-07-30):** Staticcheck `ST1020`,
+> `ST1021`, and `ST1022` validate the form of existing comments but do not
+> report missing declaration comments. Every documentation verification step
+> therefore runs both Staticcheck and Revive. Revive's sole `exported` rule is
+> the missing-declaration gate; its configuration excludes tests. In the
+> partial upstream slices, file-level diagnostic filtering applies to Revive
+> output while Staticcheck must be clean for all comments already present.
 
 ## Global Constraints
 
@@ -19,8 +27,8 @@
 - Document concurrency, zero values, lifecycle, ownership, mutation, cancellation, stable errors, panics, units, limits, and deterministic ordering wherever applicable.
 - Comment unexported implementation only to explain a verified invariant, constraint, compatibility rule, or trade-off.
 - Do not duplicate architecture, runbook, benchmark, or phase-specification prose in source files.
-- Do not add general-purpose Staticcheck rules; enable only `ST1000`, `ST1020`, `ST1021`, and `ST1022`.
-- Exclude tests from the documentation gate with `-tests=false`.
+- Do not add general-purpose lint rules. Staticcheck enables only `ST1000`, `ST1020`, `ST1021`, and `ST1022`; Revive enables only `exported`.
+- Exclude tests from the documentation gate with Staticcheck `-tests=false` and Revive's `TEST` rule exclusion.
 - Keep every task behavior-preserving and commit it independently.
 
 ---
@@ -51,9 +59,10 @@ The inventory was produced from the Go AST over non-test files beneath
 | `internal/upstream` | no | 112 | 59 |
 | **Total** | **1 of 17** | **311** | **291** |
 
-Staticcheck is the mechanical declaration gate. Field completeness and semantic
-quality remain explicit review responsibilities because the selected checks do
-not validate exported struct fields or the truth of a comment.
+Revive is the mechanical missing-declaration gate, while Staticcheck validates
+package comments and the form of comments that exist. Field completeness and
+semantic quality remain explicit review responsibilities because neither tool
+validates exported struct fields or the truth of a comment.
 
 No executable examples are added in this backfill. The core APIs require
 non-trivial fixtures, network state, or lifecycle cleanup, and the existing
@@ -66,6 +75,7 @@ large examples into rendered package documentation.
 
 **Files:**
 - Create: `staticcheck.conf`
+- Create: `revive.toml`
 - Modify: `internal/model/resources.go`
 - Read for contract evidence: `internal/model/resources_test.go`
 - Read for contract evidence: `docs/superpowers/specs/2026-07-27-phase-3b-health-timeout-retry-design.md`
@@ -80,7 +90,7 @@ large examples into rendered package documentation.
 - Function: `CloneResourceSet`.
 - Audit all 77 exported fields for units, defaults, optionality, precedence, and aliasing.
 
-- [ ] **Step 1: Add the narrow Staticcheck configuration**
+- [ ] **Step 1: Add the narrow lint configurations**
 
 Create `staticcheck.conf` with exactly:
 
@@ -88,17 +98,25 @@ Create `staticcheck.conf` with exactly:
 checks = ["ST1000", "ST1020", "ST1021", "ST1022"]
 ```
 
-- [ ] **Step 2: Install and confirm the pinned analyzer**
+Create `revive.toml` with only the `exported` rule, enable
+`check-private-receivers` and `check-public-interface`, disable the unrelated
+stuttering check, and exclude `TEST`.
+
+- [ ] **Step 2: Install and confirm the pinned analyzers**
 
 Run:
 
 ```powershell
 go install honnef.co/go/tools/cmd/staticcheck@2026.1
+go install github.com/mgechev/revive@v1.15.0
 $staticcheck = Join-Path (go env GOPATH) 'bin\staticcheck.exe'
+$revive = Join-Path (go env GOPATH) 'bin\revive.exe'
 & $staticcheck -version
+& $revive -version
 ```
 
-Expected: the version output identifies Staticcheck `2026.1`.
+Expected: the version output identifies Staticcheck `2026.1` and Revive
+`v1.15.0`.
 
 - [ ] **Step 3: Prove the model baseline fails**
 
@@ -106,10 +124,11 @@ Run:
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/model
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/model/...
 ```
 
-Expected: FAIL with `ST1000`, `ST1021`, and `ST1022` diagnostics for the
-currently undocumented package, types, and constants.
+Expected: Staticcheck reports the missing package comment. Revive reports the
+currently undocumented exported types, constants, and function.
 
 - [ ] **Step 4: Add the model package contract**
 
@@ -185,6 +204,7 @@ Run:
 ```powershell
 gofmt -w internal/model/resources.go
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/model
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/model/...
 go vet ./internal/model
 go test ./internal/model -count=1
 go doc -all ./internal/model
@@ -197,7 +217,7 @@ show all enums, resources, and clone semantics without malformed lists.
 - [ ] **Step 11: Commit**
 
 ```powershell
-git add staticcheck.conf internal/model/resources.go
+git add staticcheck.conf revive.toml internal/model/resources.go
 git commit -m "docs: document canonical resource model"
 ```
 
@@ -500,10 +520,12 @@ package upstream
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/upstream
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/upstream/...
 ```
 
-Expected: FAIL; the package comment removes `ST1000`, while normalization,
-selection, health, and lifecycle declarations remain undocumented.
+Expected: Staticcheck is clean after the package comment. Revive fails for
+normalization, selection, health, and lifecycle declarations that remain
+undocumented.
 
 - [ ] **Step 3: Document limits, configuration errors, and normalization**
 
@@ -547,7 +569,8 @@ bounded schedule and single-endpoint fast path.
 
 ```powershell
 gofmt -w internal/upstream/doc.go internal/upstream/config.go internal/upstream/endpoint.go internal/upstream/fingerprint.go internal/upstream/hashkey.go internal/upstream/chash.go internal/upstream/wrr.go
-$diagnostics = @(& (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/upstream 2>&1)
+& (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/upstream
+$diagnostics = @(& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/upstream/... 2>&1)
 $completedFileDiagnostics = @($diagnostics | Where-Object {
     $_ -match 'internal[\\/]upstream[\\/](doc|config|endpoint|fingerprint|hashkey|chash|wrr)\.go:'
 })
@@ -561,8 +584,8 @@ go doc ./internal/upstream Normalize
 git diff --check
 ```
 
-Expected: Staticcheck still reports only declarations intentionally assigned to
-Tasks 5 and 6; no diagnostics may point to files completed in this task.
+Expected: Staticcheck is clean. Revive still reports only declarations assigned
+to Tasks 5 and 6; no diagnostics may point to files completed in this task.
 
 - [ ] **Step 8: Commit**
 
@@ -606,6 +629,7 @@ git commit -m "docs: document upstream normalization and selection"
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/upstream
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/upstream/...
 ```
 
 Expected: diagnostics in the seven files listed for modification and the
@@ -662,7 +686,8 @@ Document:
 
 ```powershell
 gofmt -w internal/upstream/budget.go internal/upstream/health.go internal/upstream/health_scheduler.go internal/upstream/observer.go internal/upstream/probe.go internal/upstream/probe_http.go internal/upstream/probe_tcp.go
-$diagnostics = @(& (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/upstream 2>&1)
+& (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/upstream
+$diagnostics = @(& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/upstream/... 2>&1)
 $completedFileDiagnostics = @($diagnostics | Where-Object {
     $_ -match 'internal[\\/]upstream[\\/](budget|health|health_scheduler|observer|probe|probe_http|probe_tcp)\.go:'
 })
@@ -677,8 +702,8 @@ go doc ./internal/upstream Observer
 git diff --check
 ```
 
-Expected: remaining Staticcheck diagnostics are confined to Task 6 lifecycle
-files; targeted tests and fuzzing pass.
+Expected: Staticcheck is clean and remaining Revive diagnostics are confined to
+Task 6 lifecycle files; targeted tests and fuzzing pass.
 
 - [ ] **Step 8: Commit**
 
@@ -720,6 +745,7 @@ git commit -m "docs: document upstream health and retry contracts"
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/upstream
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/upstream/...
 ```
 
 Expected: FAIL only for declarations in `plan.go`, `registry.go`, and
@@ -774,6 +800,7 @@ Add focused implementation comments for:
 ```powershell
 gofmt -w internal/upstream/plan.go internal/upstream/registry.go internal/upstream/reaper.go internal/upstream/transport.go
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/upstream
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/upstream/...
 go vet ./internal/upstream
 go test ./internal/upstream -count=1
 go test -race ./internal/upstream -run 'Registry|Reaper|Coordinator|RetryBudget' -count=1
@@ -781,8 +808,8 @@ go doc -all ./internal/upstream
 git diff --check
 ```
 
-Expected: Staticcheck prints no diagnostics for `internal/upstream`; all unit
-and targeted race tests pass.
+Expected: Staticcheck and Revive print no diagnostics for `internal/upstream`;
+all unit and targeted race tests pass.
 
 - [ ] **Step 8: Commit**
 
@@ -825,6 +852,7 @@ git commit -m "docs: document upstream lifecycle and ownership"
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/runtime ./internal/proxy
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/runtime/... ./internal/proxy/...
 ```
 
 Expected: FAIL with package and declaration diagnostics.
@@ -896,6 +924,7 @@ returned final response/error contract.
 ```powershell
 gofmt -w internal/runtime/doc.go internal/runtime/builder.go internal/runtime/errors.go internal/runtime/manager.go internal/runtime/snapshot.go internal/proxy/doc.go internal/proxy/handler.go internal/proxy/route_transport.go
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/runtime ./internal/proxy
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/runtime/... ./internal/proxy/...
 go vet ./internal/runtime ./internal/proxy
 go test ./internal/runtime ./internal/proxy -count=1
 go doc -all ./internal/runtime
@@ -903,7 +932,7 @@ go doc -all ./internal/proxy
 git diff --check
 ```
 
-Expected: both packages are documentation-clean and tests pass.
+Expected: both tools report clean packages and tests pass.
 
 - [ ] **Step 10: Commit**
 
@@ -942,6 +971,7 @@ git commit -m "docs: document runtime and proxy contracts"
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/telemetry ./internal/gateway
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/telemetry/... ./internal/gateway/...
 ```
 
 Expected: FAIL with missing package and declaration docs.
@@ -1009,6 +1039,7 @@ capture, implicit status on `Write`, and optional-interface recovery through
 ```powershell
 gofmt -w internal/telemetry/doc.go internal/telemetry/resilience.go internal/telemetry/telemetry.go internal/gateway/doc.go internal/gateway/gateway.go internal/gateway/lifecycle_observer.go internal/gateway/response_state.go
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/telemetry ./internal/gateway
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/telemetry/... ./internal/gateway/...
 go vet ./internal/telemetry ./internal/gateway
 go test ./internal/telemetry ./internal/gateway -count=1
 go doc -all ./internal/telemetry
@@ -1016,7 +1047,7 @@ go doc -all ./internal/gateway
 git diff --check
 ```
 
-Expected: both packages are clean and lifecycle/telemetry tests pass.
+Expected: both tools report clean packages and lifecycle/telemetry tests pass.
 
 - [ ] **Step 8: Commit**
 
@@ -1054,6 +1085,7 @@ git commit -m "docs: document telemetry and gateway lifecycle"
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/benchdataset ./internal/benchreport ./internal/testupstream
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/benchdataset/... ./internal/benchreport/... ./internal/testupstream/...
 ```
 
 Expected: FAIL; `benchreport` has a package comment but its declarations remain
@@ -1106,6 +1138,7 @@ matrix into both comments.
 ```powershell
 gofmt -w internal/benchdataset/doc.go internal/benchdataset/generator.go internal/benchdataset/render.go internal/benchreport/report.go internal/testupstream/server.go
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./internal/benchdataset ./internal/benchreport ./internal/testupstream
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./internal/benchdataset/... ./internal/benchreport/... ./internal/testupstream/...
 go vet ./internal/benchdataset ./internal/benchreport ./internal/testupstream
 go test ./internal/benchdataset ./internal/benchreport ./internal/testupstream -count=1
 go doc -all ./internal/benchdataset
@@ -1114,7 +1147,8 @@ go doc -all ./internal/testupstream
 git diff --check
 ```
 
-Expected: all tooling packages are clean and deterministic tests pass.
+Expected: both tools report clean tooling packages and deterministic tests
+pass.
 
 - [ ] **Step 7: Commit**
 
@@ -1135,6 +1169,7 @@ git commit -m "docs: document deterministic tooling"
 - Modify: `README.md`
 - Modify: `.github/workflows/ci.yml`
 - Verify: `staticcheck.conf`
+- Verify: `revive.toml`
 
 **Interfaces:**
 - Consumes: all documentation-clean internal packages from Tasks 1–9.
@@ -1146,11 +1181,12 @@ Run:
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./...
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./...
 ```
 
-Expected: FAIL only with `ST1000` diagnostics for the four `cmd/*` packages.
-Any diagnostic under `internal/` must be fixed in its owning earlier task before
-continuing.
+Expected: Staticcheck fails only with `ST1000` diagnostics for the four
+`cmd/*` packages, and Revive reports no `internal/` diagnostics. Any diagnostic
+under `internal/` must be fixed in its owning earlier task before continuing.
 
 - [ ] **Step 2: Document each command package**
 
@@ -1188,6 +1224,7 @@ In `README.md`, add the pinned install command:
 
 ```bash
 go install honnef.co/go/tools/cmd/staticcheck@2026.1
+go install github.com/mgechev/revive@v1.15.0
 ```
 
 Update the canonical verification pipeline to include:
@@ -1195,13 +1232,15 @@ Update the canonical verification pipeline to include:
 ```bash
 test -z "$(gofmt -l .)" &&
 staticcheck -tests=false ./... &&
+revive -set_exit_status -config revive.toml -formatter default ./... &&
 go vet ./... &&
 go test ./... -race -count=1 &&
 go build ./cmd/...
 ```
 
-State that the root `staticcheck.conf` intentionally enables only package and
-exported-declaration documentation checks.
+State that root `staticcheck.conf` intentionally enables only package and
+existing-comment form checks, while `revive.toml` enables only the missing
+exported-declaration check.
 
 - [ ] **Step 4: Add the CI installation and documentation steps**
 
@@ -1210,8 +1249,12 @@ After `actions/setup-go` and before `go vet`, add:
 ```yaml
       - name: Install Staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@2026.1
+      - name: Install Revive
+        run: go install github.com/mgechev/revive@v1.15.0
       - name: Check Go documentation
-        run: staticcheck -tests=false ./...
+        run: |
+          staticcheck -tests=false ./...
+          revive -set_exit_status -config revive.toml -formatter default ./...
 ```
 
 Do not replace or remove the existing format, vet, test, race, command-build,
@@ -1222,6 +1265,7 @@ or Docker-build steps.
 ```powershell
 gofmt -w cmd/bench-dataset/main.go cmd/bench-report/main.go cmd/gateway-dp/main.go cmd/test-upstream/main.go
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./...
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./...
 go doc ./cmd/bench-dataset
 go doc ./cmd/bench-report
 go doc ./cmd/gateway-dp
@@ -1229,8 +1273,8 @@ go doc ./cmd/test-upstream
 git diff --check
 ```
 
-Expected: Staticcheck prints no diagnostics and all command docs render with
-their binary purpose.
+Expected: Staticcheck and Revive print no diagnostics and all command docs
+render with their binary purpose.
 
 - [ ] **Step 6: Run the canonical repository verification**
 
@@ -1240,6 +1284,7 @@ Run:
 $unformatted = @(gofmt -l .)
 if ($unformatted.Count -ne 0) { throw "Unformatted files: $($unformatted -join ', ')" }
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./...
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./...
 go vet ./...
 go test ./... -count=1
 go test ./... -race -count=1
@@ -1250,7 +1295,7 @@ docker build --build-arg COMMAND=gateway-dp -t gateway-go:ci .
 Expected:
 
 - format check returns no files;
-- Staticcheck and vet print no diagnostics;
+- Staticcheck, Revive, and vet print no diagnostics;
 - normal and race test suites pass;
 - every command builds;
 - the gateway Docker image builds.
@@ -1271,13 +1316,13 @@ git status --short
 
 Review criteria:
 
-- all changes are comments, `staticcheck.conf`, README instructions, or CI
+- all changes are comments, lint configuration, README instructions, or CI
   wiring;
 - no Go signature, expression, statement, tag, literal, or control flow changed;
 - package comments are unique;
 - no comment merely repeats the next declaration;
 - rendered lists and links follow Go doc syntax;
-- CI and README use the identical Staticcheck version and command.
+- CI and README use the identical Staticcheck and Revive versions and commands.
 
 - [ ] **Step 8: Commit**
 
@@ -1294,6 +1339,7 @@ The implementation is complete only when all ten task commits exist and:
 
 ```powershell
 & (Join-Path (go env GOPATH) 'bin\staticcheck.exe') -tests=false ./...
+& (Join-Path (go env GOPATH) 'bin\revive.exe') -set_exit_status -config revive.toml -formatter default ./...
 go vet ./...
 go test ./... -count=1
 go test ./... -race -count=1

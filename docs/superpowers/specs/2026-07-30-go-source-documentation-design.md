@@ -240,24 +240,34 @@ The repository adds a root `staticcheck.conf` that enables only:
 checks = ["ST1000", "ST1020", "ST1021", "ST1022"]
 ```
 
-The selected checks enforce package comments and exported function, method,
-type, variable, and constant doc-comment form. No unrelated Staticcheck rule is
-introduced by this work.
+The selected checks enforce package comments and the form of existing exported
+function, method, type, variable, and constant doc comments. Staticcheck does
+not report an exported declaration merely because its comment is absent.
 
 Staticcheck is pinned to release `2026.1`, which supports the project's Go 1.26
-toolchain. Production source is checked with:
+toolchain.
+
+The repository also adds `revive.toml` with only Revive's `exported` rule.
+Revive is pinned to `v1.15.0` and supplies the missing-declaration coverage that
+Staticcheck does not provide. The rule checks exported methods on private
+receivers and methods declared by public interfaces, disables unrelated
+stuttering advice, and excludes test files. No unrelated Revive or Staticcheck
+rule is introduced by this work.
+
+Production source is checked with:
 
 ```text
 staticcheck -tests=false ./...
+revive -set_exit_status -config revive.toml -formatter default ./...
 ```
 
-During the rollout, each package slice runs Staticcheck only for the packages it
-has completed. The global CI step is added only after the complete production
-baseline passes, so intermediate documentation commits do not leave the main CI
-workflow permanently failing.
+During the rollout, each package slice runs both tools for the packages and
+files it has completed. The global CI steps are added only after the complete
+production baseline passes, so intermediate documentation commits do not leave
+the main CI workflow permanently failing.
 
 The README's canonical local verification instructions include installation of
-the pinned Staticcheck version and the full documentation check.
+both pinned tools and both full documentation checks.
 
 ## 8. Verification strategy
 
@@ -278,6 +288,7 @@ The final documentation gate must pass:
 ```text
 test -z "$(gofmt -l .)"
 staticcheck -tests=false ./...
+revive -set_exit_status -config revive.toml -formatter default ./...
 go vet ./...
 go test ./... -count=1
 go test ./... -race -count=1
@@ -296,14 +307,15 @@ The backfill is complete when:
 
 1. all production packages beneath `internal/` and `cmd/` have one canonical
    package comment;
-2. all exported production declarations pass `ST1020`, `ST1021`, and `ST1022`;
+2. all exported production declarations pass Revive's `exported` rule and all
+   existing comments pass `ST1020`, `ST1021`, and `ST1022`;
 3. the important caller-visible contracts listed in Section 4 are documented
    wherever applicable;
 4. non-exported comments explain only meaningful invariants, constraints, or
    trade-offs;
 5. representative `go doc` output is readable and correctly structured;
-6. the root Staticcheck configuration, README instructions, and CI gate agree
-   on the exact pinned tool and command;
+6. the root Staticcheck and Revive configurations, README instructions, and CI
+   gate agree on the exact pinned tools and commands;
 7. the full verification pipeline passes or records an explicit
    environment-only blocker for a canonical external gate; and
 8. no documentation commit changes runtime behavior or an API signature.
