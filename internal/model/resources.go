@@ -34,8 +34,9 @@ const (
 	// PredicateEquals matches when the named header or query parameter equals
 	// the predicate's single configured value.
 	PredicateEquals PredicateOperator = "equals"
-	// PredicateNotEquals matches when the named header or query parameter does
-	// not equal the predicate's single configured value.
+	// PredicateNotEquals matches when the named header or query parameter is
+	// present and none of its values equals the predicate's single configured
+	// value.
 	PredicateNotEquals PredicateOperator = "not_equals"
 	// PredicateOneOf matches when the named header or query parameter equals
 	// one of the predicate's configured values.
@@ -226,14 +227,17 @@ type ActiveHealthPolicy struct {
 // PassiveHealthPolicy classifies proxied request outcomes and supplies
 // thresholds for marking an endpoint unhealthy.
 type PassiveHealthPolicy struct {
-	// HTTPFailures is the passive HTTP-failure threshold.
+	// HTTPFailures is the passive HTTP-failure threshold; zero uses the
+	// internal sentinel threshold of 255 consecutive failures.
 	HTTPFailures uint8
-	// TransportFailures is the passive transport-failure threshold.
+	// TransportFailures is the passive transport-failure threshold; zero uses
+	// the internal sentinel threshold of 255 consecutive failures.
 	TransportFailures uint8
-	// Timeouts is the passive timeout threshold.
+	// Timeouts is the passive timeout threshold; zero uses the internal
+	// sentinel threshold of 255 consecutive timeouts.
 	Timeouts uint8
 	// UnhealthyStatuses lists proxied HTTP response status codes classified as
-	// passive failures.
+	// passive failures and counted toward HTTPFailures.
 	UnhealthyStatuses []uint16
 }
 
@@ -268,7 +272,9 @@ type RetryBudgetPolicy struct {
 // RetryPolicy configures the effective attempt count, replay-safe method set,
 // retry classification, budget, and total request timeout for an upstream.
 type RetryPolicy struct {
-	// MaxAttempts includes the primary attempt; a value of one disables retry.
+	// MaxAttempts includes the primary attempt; one disables retry. Zero is
+	// accepted only as part of an otherwise zero legacy policy and normalizes
+	// to one.
 	MaxAttempts uint8
 	// Methods lists HTTP methods eligible for retry after replayability checks.
 	Methods []string
@@ -308,7 +314,8 @@ type Endpoint struct {
 
 // BalancerPolicy selects an algorithm and its optional consistent-hash key.
 type BalancerPolicy struct {
-	// Type identifies the endpoint-selection algorithm.
+	// Type identifies the endpoint-selection algorithm; an empty value
+	// normalizes to BalancerWeightedRoundRobin.
 	Type BalancerType
 	// HashKey configures compound-key extraction for consistent hashing.
 	HashKey HashKeyPolicy

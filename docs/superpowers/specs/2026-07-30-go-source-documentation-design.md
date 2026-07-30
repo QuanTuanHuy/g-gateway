@@ -182,9 +182,10 @@ Packages:
 - `internal/telemetry`
 - `internal/gateway`
 
-The comments define readiness semantics, bounded metrics and labels, listener
-startup, concurrent use, request draining, shutdown ordering, and cleanup
-ownership.
+The comments define readiness semantics, fixed metric and label names,
+configured route/upstream ID and observed-method request labels, avoidance of
+raw request/error labels, listener startup, concurrent use, request draining,
+shutdown fallback ordering, and cleanup ownership.
 
 ### 5.6. Deterministic tooling
 

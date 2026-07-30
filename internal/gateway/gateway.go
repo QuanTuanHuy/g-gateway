@@ -287,9 +287,11 @@ func (g *Gateway) Wait() error {
 }
 
 // Shutdown begins an idempotent readiness-first shutdown. The first call's
-// context bounds graceful traffic drain and runtime cleanup; later calls return
-// that same result. On deadline expiry, traffic servers are force-closed before
-// final runtime and admin cleanup.
+// context bounds graceful server shutdown; later calls return that same
+// result. If the context expires, Shutdown force-closes traffic servers, waits
+// for tracked handlers, and gives runtime cleanup a separate two-second
+// context before force-closing the admin server. The caller's context therefore
+// does not bound the complete fallback cleanup path.
 func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.closing.Store(true)
 	g.shutdownOnce.Do(func() {

@@ -987,8 +987,10 @@ Create `internal/telemetry/doc.go`:
 // Package telemetry exposes bounded gateway health, readiness, request,
 // runtime, and upstream metrics through the private admin handler.
 //
-// Metric label sets are fixed by construction; callers must not introduce
-// resource IDs, endpoints, revisions, or error text as labels.
+// Metric names and label names are fixed by construction. Request metrics use
+// the observed HTTP method and configuration-bounded route and upstream IDs;
+// lifecycle and resilience metrics avoid raw endpoints, revisions, error text,
+// request paths, and request hosts as label values.
 package telemetry
 ```
 
@@ -996,8 +998,9 @@ package telemetry
 
 Document provider registration uniqueness, Prometheus collector contracts,
 readiness transitions, admin handler ownership, optional pprof/request metrics,
-matched/unmatched route labels, observer gauge/delta behavior, and optional
-response-writer interface preservation through `Unwrap`.
+observed method and configured route/upstream ID labels, forbidden raw request
+and error labels, observer gauge/delta behavior, and optional response-writer
+interface preservation through `Unwrap`.
 
 - [ ] **Step 4: Add gateway package documentation**
 
@@ -1025,8 +1028,10 @@ Document:
 - `Apply` is disabled after shutdown begins and preserves last-known-good state
   on rejection;
 - `Wait` reports unexpected server termination;
-- `Shutdown` is idempotent, readiness-first, context-bounded, and drains
-  traffic before final runtime cleanup;
+- `Shutdown` is idempotent and readiness-first; its caller context bounds
+  graceful server shutdown, while deadline fallback force-closes traffic,
+  waits for tracked handlers, and gives runtime cleanup a separate two-second
+  context before final admin cleanup;
 - a `Gateway` must not be copied after first use and is safe only through its
   documented methods.
 

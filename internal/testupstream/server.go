@@ -44,7 +44,8 @@ type headersResponse struct {
 
 // New returns an independently usable handler with fresh request,
 // cancellation, and connection state. logger receives diagnostics from
-// streaming and forced-close endpoints and should be non-nil.
+// streaming and forced-close endpoints and must be non-nil because diagnostic
+// error paths call it directly.
 func New(logger *slog.Logger) http.Handler {
 	state := &server{
 		logger:      logger,
