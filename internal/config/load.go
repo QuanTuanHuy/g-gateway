@@ -11,6 +11,8 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// Load reads and decodes one configuration file at path. It wraps file-open
+// errors with the path and delegates strict format validation to Decode.
 func Load(path string) (BootstrapConfig, model.ResourceSet, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -21,6 +23,11 @@ func Load(path string) (BootstrapConfig, model.ResourceSet, error) {
 	return Decode(file)
 }
 
+// Decode strictly decodes one supported versioned YAML document into bootstrap
+// settings and canonical resources. It rejects unknown fields, trailing YAML
+// documents, invalid references, and unsupported API versions, while applying
+// the compatibility defaults for the selected version. On error, Decode
+// returns no partially successful configuration.
 func Decode(r io.Reader) (BootstrapConfig, model.ResourceSet, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
