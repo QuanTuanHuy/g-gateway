@@ -3,6 +3,9 @@ package model
 import (
 	"encoding/json"
 	"testing"
+	"time"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
 )
 
 func TestCloneResourceSetDoesNotAliasInput(t *testing.T) {
@@ -98,5 +101,84 @@ func TestCloneResourceSetClonesEndpointAndHashSources(t *testing.T) {
 	}
 	if got.Upstreams[0].Balancer.HashKey.Sources[0].Name != "X-Tenant" {
 		t.Fatalf("hash source = %+v", got.Upstreams[0].Balancer.HashKey.Sources[0])
+	}
+}
+
+func TestCloneResourceSetClonesResiliencePolicies(t *testing.T) {
+	timeout := 3 * time.Second
+	attempts := uint8(3)
+	methods := []string{"GET", "POST"}
+	in := ResourceSet{
+		Routes: []Route{{
+			ID: "users",
+			Resilience: RouteResiliencePolicy{
+				TotalTimeout: &timeout,
+				MaxAttempts:  &attempts,
+				Methods:      &methods,
+				RetryOn:      &RetryOnPolicy{Statuses: []uint16{503}},
+			},
+		}},
+		Upstreams: []Upstream{{
+			ID: "users",
+			Health: HealthPolicy{
+				Active: &ActiveHealthPolicy{
+					Type:              HealthCheckHTTP,
+					HealthyStatuses:   []uint16{200},
+					UnhealthyStatuses: []uint16{503},
+				},
+				Passive: &PassiveHealthPolicy{UnhealthyStatuses: []uint16{503}},
+			},
+			Retry: RetryPolicy{
+				Methods: []string{"GET"},
+				RetryOn: RetryOnPolicy{Statuses: []uint16{503}},
+			},
+		}},
+	}
+
+	got := CloneResourceSet(in)
+	(*in.Routes[0].Resilience.Methods)[0] = "DELETE"
+	in.Routes[0].Resilience.RetryOn.Statuses[0] = 504
+	in.Upstreams[0].Health.Active.HealthyStatuses[0] = 204
+	in.Upstreams[0].Health.Passive.UnhealthyStatuses[0] = 500
+	in.Upstreams[0].Retry.Methods[0] = "HEAD"
+
+	if (*got.Routes[0].Resilience.Methods)[0] != "GET" ||
+		got.Routes[0].Resilience.RetryOn.Statuses[0] != 503 ||
+		got.Upstreams[0].Health.Active.HealthyStatuses[0] != 200 ||
+		got.Upstreams[0].Health.Passive.UnhealthyStatuses[0] != 503 ||
+		got.Upstreams[0].Retry.Methods[0] != "GET" {
+		t.Fatalf("clone shares resilience state: %+v", got)
+	}
+}
+
+func TestCloneResourceSetClonesTLSReferencesAndSharesImmutableMaterial(t *testing.T) {
+	certificate := new(tlsmaterial.Certificate)
+	bundle := new(tlsmaterial.TrustBundle)
+	in := ResourceSet{
+		Certificates: []*tlsmaterial.Certificate{certificate},
+		TrustBundles: []*tlsmaterial.TrustBundle{bundle},
+		Upstreams: []Upstream{{
+			ID: "orders",
+			Transport: TransportConfig{
+				Protocol: TransportProtocolHTTP2,
+				TLS: &UpstreamTLSPolicy{
+					TrustBundleRef:       "roots",
+					ClientCertificateRef: "client",
+					ServerName:           "orders.internal",
+				},
+			},
+		}},
+	}
+
+	got := CloneResourceSet(in)
+	in.Upstreams[0].Transport.TLS.ServerName = "changed.internal"
+	in.Certificates[0] = nil
+	in.TrustBundles[0] = nil
+
+	if got.Upstreams[0].Transport.TLS.ServerName != "orders.internal" {
+		t.Fatal("CloneResourceSet() shares mutable TLS policy")
+	}
+	if got.Certificates[0] != certificate || got.TrustBundles[0] != bundle {
+		t.Fatal("CloneResourceSet() did not retain immutable material handles")
 	}
 }

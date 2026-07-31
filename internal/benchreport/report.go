@@ -19,62 +19,121 @@ import (
 	"strings"
 )
 
+// Verdict classifies the aggregate or one scenario/payload comparison.
 type Verdict string
 
 const (
-	VerdictInvalid         Verdict = "invalid"
+	// VerdictInvalid means evidence is incomplete, erroneous, or lacks required
+	// direct-control headroom.
+	VerdictInvalid Verdict = "invalid"
+	// VerdictProvisionalPass means Go meets the phase-1 throughput, p99, and
+	// error-rate parity thresholds.
 	VerdictProvisionalPass Verdict = "provisional_pass"
+	// VerdictProvisionalMiss means valid evidence misses at least one phase-1
+	// parity threshold.
 	VerdictProvisionalMiss Verdict = "provisional_miss"
 
-	EnvironmentProvisional    = "provisional"
+	// EnvironmentProvisional identifies any run set containing provisional
+	// metadata or Docker Desktop evidence.
+	EnvironmentProvisional = "provisional"
+	// EnvironmentDedicatedLinux identifies a run set whose every artifact is
+	// marked dedicated Linux and is not from Docker Desktop. Verdict names
+	// remain provisional in this phase-1 report schema.
 	EnvironmentDedicatedLinux = "dedicated_linux"
 )
 
+// ErrInvalidEvidence is returned after reports are written when an aggregated
+// comparison has invalid measured evidence. Callers should use errors.Is.
 var ErrInvalidEvidence = errors.New("invalid benchmark evidence")
 
+// Options identifies the evidence tree to read and the report directory to
+// create or update.
 type Options struct {
-	InputDir  string
+	// InputDir is an existing directory recursively searched for raw-run.json
+	// artifacts and their relative evidence files.
+	InputDir string
+	// OutputDir receives summary.json, summary.csv, and summary.md.
 	OutputDir string
 }
 
+// Summary is the deterministic report over all scenario/payload comparisons.
 type Summary struct {
-	SchemaVersion    string       `json:"schema_version"`
-	EnvironmentClass string       `json:"environment_class"`
-	Verdict          Verdict      `json:"verdict"`
-	Comparisons      []Comparison `json:"comparisons"`
+	// SchemaVersion is the report schema version.
+	SchemaVersion string `json:"schema_version"`
+	// EnvironmentClass is provisional if any input is provisional or reports
+	// Docker Desktop; otherwise it is dedicated_linux.
+	EnvironmentClass string `json:"environment_class"`
+	// Verdict is invalid if any comparison is invalid, then provisional_miss
+	// if any valid comparison misses, and provisional_pass otherwise.
+	Verdict Verdict `json:"verdict"`
+	// Comparisons is sorted by scenario and then payload size.
+	Comparisons []Comparison `json:"comparisons"`
 }
 
+// Comparison summarizes one scenario and payload across direct, Go, and
+// APISIX runs.
 type Comparison struct {
-	Scenario     string        `json:"scenario"`
-	PayloadBytes int64         `json:"payload_bytes"`
-	Generator    string        `json:"generator"`
-	Protocol     string        `json:"protocol"`
-	TLS          bool          `json:"tls"`
-	Verdict      Verdict       `json:"verdict"`
-	Reasons      []string      `json:"reasons"`
-	Direct       DirectSummary `json:"direct"`
-	Go           TargetSummary `json:"go"`
-	APISIX       TargetSummary `json:"apisix"`
+	// Scenario is the benchmark scenario name.
+	Scenario string `json:"scenario"`
+	// PayloadBytes is the response payload size in bytes.
+	PayloadBytes int64 `json:"payload_bytes"`
+	// Generator is "wrk" or "h2load".
+	Generator string `json:"generator"`
+	// Protocol is the declared downstream protocol.
+	Protocol string `json:"protocol"`
+	// TLS reports whether the measured downstream scenario uses TLS.
+	TLS bool `json:"tls"`
+	// Verdict is the comparison's evidence/parity classification.
+	Verdict Verdict `json:"verdict"`
+	// Reasons contains deterministic human-readable verdict reasons.
+	Reasons []string `json:"reasons"`
+	// Direct summarizes the single required direct-control run.
+	Direct DirectSummary `json:"direct"`
+	// Go aggregates all G-Gateway runs.
+	Go TargetSummary `json:"go"`
+	// APISIX aggregates all APISIX runs.
+	APISIX TargetSummary `json:"apisix"`
 }
 
+// DirectSummary describes upstream control capacity relative to the faster
+// gateway target.
 type DirectSummary struct {
-	RequestsPerSecond      float64 `json:"requests_per_second"`
+	// RequestsPerSecond is throughput reparsed from direct-control evidence.
+	RequestsPerSecond float64 `json:"requests_per_second"`
+	// RequiredHeadroomFactor is the configured minimum direct/faster-target
+	// ratio.
 	RequiredHeadroomFactor float64 `json:"required_headroom_factor"`
-	HeadroomRatio          float64 `json:"headroom_ratio"`
+	// HeadroomRatio is direct throughput divided by the faster target's median
+	// throughput.
+	HeadroomRatio float64 `json:"headroom_ratio"`
 }
 
+// TargetSummary aggregates repeated runs for one gateway target.
 type TargetSummary struct {
-	RunCount                     int     `json:"run_count"`
-	MedianRequestsPerSecond      float64 `json:"median_requests_per_second"`
+	// RunCount is the number of runs; current evidence validation requires at
+	// least one run per gateway target.
+	RunCount int `json:"run_count"`
+	// MedianRequestsPerSecond is the median of per-run throughput.
+	MedianRequestsPerSecond float64 `json:"median_requests_per_second"`
+	// MedianTransferBytesPerSecond is the median of per-run byte throughput.
 	MedianTransferBytesPerSecond float64 `json:"median_transfer_bytes_per_second"`
-	MedianP50US                  float64 `json:"median_p50_us"`
-	MedianP95US                  float64 `json:"median_p95_us"`
-	MedianP99US                  float64 `json:"median_p99_us"`
-	Requests                     int64   `json:"requests"`
-	RequestErrors                int64   `json:"request_errors"`
-	Timeouts                     int64   `json:"timeouts"`
-	Non2xx                       int64   `json:"non_2xx"`
-	ErrorRate                    float64 `json:"error_rate"`
+	// MedianP50US is the median per-run p50 latency in microseconds.
+	MedianP50US float64 `json:"median_p50_us"`
+	// MedianP95US is the median per-run p95 latency in microseconds.
+	MedianP95US float64 `json:"median_p95_us"`
+	// MedianP99US is the median per-run p99 latency in microseconds.
+	MedianP99US float64 `json:"median_p99_us"`
+	// Requests is the total completed request count across runs.
+	Requests int64 `json:"requests"`
+	// RequestErrors is the total generator request-error count.
+	RequestErrors int64 `json:"request_errors"`
+	// Timeouts is the total timeout count.
+	Timeouts int64 `json:"timeouts"`
+	// Non2xx is the total non-2xx response count.
+	Non2xx int64 `json:"non_2xx"`
+	// ErrorRate is the sum of error, timeout, and non-2xx counts divided by
+	// Requests.
+	ErrorRate float64 `json:"error_rate"`
 }
 
 type rawRun struct {
@@ -160,6 +219,14 @@ type comparisonKey struct {
 	payload  int64
 }
 
+// Generate strictly validates and reparses benchmark artifacts, groups them by
+// scenario and payload, uses nearest-rank h2load percentiles and medians across
+// target runs, then writes deterministic JSON, CSV, and Markdown summaries.
+// Each comparison requires exactly one direct run and at least one Go and
+// APISIX run. Invalid aggregate measurements are written and returned with
+// ErrInvalidEvidence; a provisional miss is returned without error. Malformed
+// or missing input evidence returns its parsing error before reports are
+// generated.
 func Generate(opts Options) (Summary, error) {
 	input, output, err := resolveOptions(opts)
 	if err != nil {

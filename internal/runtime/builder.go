@@ -10,11 +10,14 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
+// Builder compiles validated canonical resources into immutable snapshots
+// using one plugin registry and a separately prepared upstream candidate.
 type Builder struct {
 	plugins     *plugin.Registry
 	beforeBuild func(uint64)
 }
 
+// NewBuilder returns a Builder using plugins and rejects a nil registry.
 func NewBuilder(plugins *plugin.Registry) (*Builder, error) {
 	if plugins == nil {
 		return nil, fmt.Errorf("plugin registry is required")
@@ -22,6 +25,11 @@ func NewBuilder(plugins *plugin.Registry) (*Builder, error) {
 	return &Builder{plugins: plugins}, nil
 }
 
+// Build clones and validates input, resolves references, compiles plugin chains
+// and routing, and returns an immutable snapshot for revision. It does not
+// commit or roll back candidate; the caller retains that transaction
+// responsibility. Any failure returns a stage-specific BuildError and no
+// usable snapshot.
 func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *upstream.Candidate) (*Snapshot, error) {
 	if b.beforeBuild != nil {
 		b.beforeBuild(revision)
@@ -43,6 +51,10 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 	services := make(map[string]model.Service, len(resources.Services))
 	for _, service := range resources.Services {
 		services[service.ID] = service
+	}
+	upstreams := make(map[string]model.Upstream, len(resources.Upstreams))
+	for _, resource := range resources.Upstreams {
+		upstreams[resource.ID] = resource
 	}
 	routes := make([]CompiledRoute, 0, len(resources.Routes))
 	specs := make([]router.RouteSpec, 0, len(resources.Routes))
@@ -93,6 +105,7 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 			upstreamMeta: &requestctx.UpstreamMeta{ID: upstreamID},
 			plan:         upstreamPlan,
 			plugins:      chain,
+			retry:        effectiveRetryPolicy(upstreams[upstreamID].Retry, route.Resilience),
 		})
 		specs = append(specs, router.RouteSpec{
 			Index:    routeIndex,
@@ -124,4 +137,26 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 			PluginCount:   pluginCount,
 		},
 	}, nil
+}
+
+func effectiveRetryPolicy(base model.RetryPolicy, override model.RouteResiliencePolicy) model.RetryPolicy {
+	if base.MaxAttempts == 0 {
+		base.MaxAttempts = 1
+	}
+	base.Methods = append([]string(nil), base.Methods...)
+	base.RetryOn.Statuses = append([]uint16(nil), base.RetryOn.Statuses...)
+	if override.TotalTimeout != nil {
+		base.TotalTimeout = *override.TotalTimeout
+	}
+	if override.MaxAttempts != nil {
+		base.MaxAttempts = *override.MaxAttempts
+	}
+	if override.Methods != nil {
+		base.Methods = append([]string{}, (*override.Methods)...)
+	}
+	if override.RetryOn != nil {
+		base.RetryOn = *override.RetryOn
+		base.RetryOn.Statuses = append([]uint16(nil), override.RetryOn.Statuses...)
+	}
+	return base
 }

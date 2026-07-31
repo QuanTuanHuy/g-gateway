@@ -11,6 +11,8 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// Load reads and decodes one configuration file at path. It wraps file-open
+// errors with the path and delegates strict format validation to Decode.
 func Load(path string) (BootstrapConfig, model.ResourceSet, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -21,6 +23,11 @@ func Load(path string) (BootstrapConfig, model.ResourceSet, error) {
 	return Decode(file)
 }
 
+// Decode strictly decodes one supported versioned YAML document into bootstrap
+// settings and canonical resources. It rejects unknown fields, trailing YAML
+// documents, invalid references, and unsupported API versions, while applying
+// the compatibility defaults for the selected version. On error, Decode
+// returns no partially successful configuration.
 func Decode(r io.Reader) (BootstrapConfig, model.ResourceSet, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -69,6 +76,32 @@ func Decode(r io.Reader) (BootstrapConfig, model.ResourceSet, error) {
 			return BootstrapConfig{}, model.ResourceSet{}, err
 		}
 		if err := validateV3(wire.APIVersion, &bootstrap, &resources); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		return bootstrap, resources, nil
+	case apiVersionV1Alpha4:
+		var wire documentV4
+		if err := decodeStrict(data, &wire); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		bootstrap, resources, err := convertV4(wire)
+		if err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		if err := validateV4(wire.APIVersion, &bootstrap, &resources); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		return bootstrap, resources, nil
+	case apiVersionV1Alpha5:
+		var wire documentV5
+		if err := decodeStrict(data, &wire); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		bootstrap, resources, err := convertV5(wire)
+		if err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		if err := validateV5(wire.APIVersion, &bootstrap, &resources); err != nil {
 			return BootstrapConfig{}, model.ResourceSet{}, err
 		}
 		return bootstrap, resources, nil
@@ -133,6 +166,10 @@ func convert(wire document) (BootstrapConfig, model.ResourceSet, error) {
 		},
 		Runtime: RuntimeConfig{
 			MaxRetiredSnapshots: DefaultMaxRetiredSnapshots,
+			Health: HealthRuntimeConfig{
+				Workers:            DefaultHealthWorkers,
+				ReadyQueueCapacity: DefaultHealthQueueCapacity,
+			},
 		},
 	}
 
@@ -174,12 +211,14 @@ func convert(wire document) (BootstrapConfig, model.ResourceSet, error) {
 				Type: model.BalancerWeightedRoundRobin,
 			},
 			Transport: model.TransportConfig{
+				Protocol:                  model.TransportProtocolHTTP1,
 				DialTimeout:               dialTimeout,
 				ResponseHeaderTimeout:     responseHeaderTimeout,
 				IdleConnectionTimeout:     idleConnectionTimeout,
 				MaxIdleConnections:        upstream.Transport.MaxIdleConnections,
 				MaxIdleConnectionsPerHost: upstream.Transport.MaxIdleConnectionsPerHost,
 			},
+			Retry: model.RetryPolicy{MaxAttempts: 1},
 		})
 	}
 

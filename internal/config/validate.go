@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -16,6 +17,8 @@ const (
 	apiVersionV1Alpha1 = "gateway/v1alpha1"
 	apiVersionV1Alpha2 = "gateway/v1alpha2"
 	apiVersionV1Alpha3 = "gateway/v1alpha3"
+	apiVersionV1Alpha4 = "gateway/v1alpha4"
+	apiVersionV1Alpha5 = "gateway/v1alpha5"
 )
 
 func validateV1(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
@@ -26,6 +29,9 @@ func validateV1(version string, bootstrap *BootstrapConfig, resources *model.Res
 		return err
 	}
 	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if err := validateLegacyUpstreamSchemes(resources.Upstreams); err != nil {
 		return err
 	}
 	if len(resources.Routes) != 1 {
@@ -43,6 +49,62 @@ func validateV1(version string, bootstrap *BootstrapConfig, resources *model.Res
 	return nil
 }
 
+func validateV4(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha4 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha4)
+	}
+	if got := bootstrap.Runtime.Health.Workers; got < 1 || got > 256 {
+		return fmt.Errorf("runtime.health.workers: must be between 1 and 256")
+	}
+	if got := bootstrap.Runtime.Health.ReadyQueueCapacity; got < 1 || got > 65536 {
+		return fmt.Errorf("runtime.health.ready_queue_capacity: must be between 1 and 65536")
+	}
+	return validateV3(apiVersionV1Alpha3, bootstrap, resources)
+}
+
+func validateV5(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha5 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha5)
+	}
+	if got := bootstrap.Runtime.Health.Workers; got < 1 || got > 256 {
+		return fmt.Errorf("runtime.health.workers: must be between 1 and 256")
+	}
+	if got := bootstrap.Runtime.Health.ReadyQueueCapacity; got < 1 || got > 65536 {
+		return fmt.Errorf("runtime.health.ready_queue_capacity: must be between 1 and 65536")
+	}
+	if err := validateBootstrap(*bootstrap); err != nil {
+		return err
+	}
+	if got := bootstrap.Runtime.MaxRetiredSnapshots; got < 1 || got > 1024 {
+		return fmt.Errorf("runtime.max_retired_snapshots: must be between 1 and 1024")
+	}
+	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if len(resources.Routes) == 0 {
+		return fmt.Errorf("routes: must contain at least one route")
+	}
+	if len(resources.Upstreams) == 0 {
+		return fmt.Errorf("upstreams: must contain at least one upstream")
+	}
+	normalized, err := upstreamkernel.Normalize(resources.Upstreams)
+	if err != nil {
+		return err
+	}
+	resources.Upstreams = normalized
+	for i := range resources.Services {
+		if err := validateService(&resources.Services[i], i, resources.Upstreams); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Routes {
+		if err := validateRouteV2(&resources.Routes[i], i, resources.Services, resources.Upstreams); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateV2(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
 	if version != apiVersionV1Alpha2 {
 		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha2)
@@ -51,6 +113,9 @@ func validateV2(version string, bootstrap *BootstrapConfig, resources *model.Res
 		return err
 	}
 	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if err := validateLegacyUpstreamSchemes(resources.Upstreams); err != nil {
 		return err
 	}
 	if len(resources.Routes) == 0 {
@@ -88,6 +153,9 @@ func validateV3(version string, bootstrap *BootstrapConfig, resources *model.Res
 		return fmt.Errorf("runtime.max_retired_snapshots: must be between 1 and 1024")
 	}
 	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if err := validateLegacyUpstreamSchemes(resources.Upstreams); err != nil {
 		return err
 	}
 	if len(resources.Routes) == 0 {
@@ -182,6 +250,22 @@ func validateReadableRegularFile(field, path string) error {
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s: %q is not a regular file", field, path)
+	}
+	return nil
+}
+
+func validateLegacyUpstreamSchemes(upstreams []model.Upstream) error {
+	for upstreamIndex, upstream := range upstreams {
+		for endpointIndex, endpoint := range upstream.Endpoints {
+			parsed, err := url.Parse(endpoint.URL)
+			if err != nil || parsed.Scheme != "http" {
+				return fmt.Errorf(
+					"upstreams[%d].endpoints[%d].url: scheme http is required",
+					upstreamIndex,
+					endpointIndex,
+				)
+			}
+		}
 	}
 	return nil
 }

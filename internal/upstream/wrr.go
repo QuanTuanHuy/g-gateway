@@ -41,6 +41,8 @@ func compileWRR(endpoints []weightedEndpoint, state *selectionState) (wrrSelecto
 		return wrrSelector{}, fmt.Errorf("at least one positive endpoint weight is required")
 	}
 	if len(active) == 1 {
+		// The direct representation avoids allocating or advancing a schedule
+		// for the single-endpoint case.
 		return wrrSelector{state: state, direct: active[0].index}, nil
 	}
 	if len(active) > MaxWRRSchedule {
@@ -64,6 +66,8 @@ func compileWRR(endpoints []weightedEndpoint, state *selectionState) (wrrSelecto
 		}
 	} else {
 		scheduleLength = MaxWRRSchedule
+		// The bounded schedule retains every active endpoint and apportions
+		// remaining slots deterministically by normalized weight.
 		assignCappedWRRSlots(active, normalizedSum, scheduleLength)
 	}
 
@@ -90,6 +94,20 @@ func (s *wrrSelector) selectIndex() uint32 {
 	}
 	next := s.state.sequence.Add(1) - 1
 	return s.schedule[next%uint64(len(s.schedule))]
+}
+
+func (s *wrrSelector) selectNext(selectable func(uint32) bool) (uint32, bool) {
+	if len(s.schedule) == 0 {
+		return s.direct, selectable(s.direct)
+	}
+	start := s.state.sequence.Add(1) - 1
+	for offset := uint64(0); offset < uint64(len(s.schedule)); offset++ {
+		ordinal := s.schedule[(start+offset)%uint64(len(s.schedule))]
+		if selectable(ordinal) {
+			return ordinal, true
+		}
+	}
+	return 0, false
 }
 
 type wrrSlot struct {
@@ -134,10 +152,13 @@ func assignCappedWRRSlots(slots []wrrSlot, normalizedSum uint64, scheduleLength 
 
 type wrrDeadlineHeap []wrrSlot
 
+// Len returns the number of pending slots for heap.Interface.
 func (h wrrDeadlineHeap) Len() int {
 	return len(h)
 }
 
+// Less orders slots by their next normalized deadline, then canonical endpoint
+// identity and ordinal for deterministic tie-breaking.
 func (h wrrDeadlineHeap) Less(i, j int) bool {
 	left := uint64(h[i].emitted+1) * uint64(h[j].assigned)
 	right := uint64(h[j].emitted+1) * uint64(h[i].assigned)
@@ -150,14 +171,17 @@ func (h wrrDeadlineHeap) Less(i, j int) bool {
 	return h[i].index < h[j].index
 }
 
+// Swap exchanges two pending slots for heap.Interface.
 func (h wrrDeadlineHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 }
 
+// Push appends one pending WRR slot for heap.Interface.
 func (h *wrrDeadlineHeap) Push(value any) {
 	*h = append(*h, value.(wrrSlot))
 }
 
+// Pop removes and returns the final pending WRR slot for heap.Interface.
 func (h *wrrDeadlineHeap) Pop() any {
 	old := *h
 	last := len(old) - 1

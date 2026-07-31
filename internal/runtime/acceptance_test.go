@@ -34,7 +34,7 @@ func TestPhase2Acceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upstreamRegistry, err := upstream.NewRegistry(64, nil)
+	upstreamRegistry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}

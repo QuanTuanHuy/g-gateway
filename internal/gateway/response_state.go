@@ -13,6 +13,8 @@ type responseState struct {
 	committed bool
 }
 
+// WriteHeader marks the response committed on its first call and forwards the
+// status code to the underlying writer.
 func (w *responseState) WriteHeader(status int) {
 	if !w.committed {
 		w.committed = true
@@ -20,6 +22,7 @@ func (w *responseState) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
+// Write commits an implicit 200 response before forwarding data.
 func (w *responseState) Write(data []byte) (int, error) {
 	if !w.committed {
 		w.WriteHeader(http.StatusOK)
@@ -27,6 +30,8 @@ func (w *responseState) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
+// Unwrap returns the underlying writer so http.ResponseController can recover
+// supported optional response-writer interfaces.
 func (w *responseState) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }

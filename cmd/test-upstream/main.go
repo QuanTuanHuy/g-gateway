@@ -1,3 +1,5 @@
+// Package main implements the test-upstream command, which runs the
+// deterministic HTTP upstream used by correctness and integration tests.
 package main
 
 import (

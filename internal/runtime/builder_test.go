@@ -87,6 +87,46 @@ func TestBuilderRouteDisableRemovesInheritedPlugin(t *testing.T) {
 	}
 }
 
+func TestBuilderCompilesImmutableEffectiveRetryPolicy(t *testing.T) {
+	resources := testResources()
+	resources.Upstreams[0].Retry = model.RetryPolicy{
+		MaxAttempts:  2,
+		Methods:      []string{"GET", "HEAD"},
+		RetryOn:      model.RetryOnPolicy{ConnectFailure: true, Statuses: []uint16{503}},
+		Budget:       model.RetryBudgetPolicy{RatioPer1000: 100, Burst: 10, MaxInflight: 32},
+		TotalTimeout: 30 * time.Second,
+	}
+	timeout := 2 * time.Second
+	attempts := uint8(3)
+	methods := []string{}
+	resources.Routes[0].Resilience = model.RouteResiliencePolicy{
+		TotalTimeout: &timeout,
+		MaxAttempts:  &attempts,
+		Methods:      &methods,
+		RetryOn:      &model.RetryOnPolicy{Statuses: []uint16{503}},
+	}
+	builder := mustBuilder(t, resources.Upstreams)
+	candidate := mustCandidate(t, resources.Upstreams)
+	snapshot, err := builder.Build(1, resources, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := snapshot.routes[0].RetryPolicy()
+	if policy.MaxAttempts != 3 ||
+		policy.TotalTimeout != 2*time.Second ||
+		len(policy.Methods) != 0 ||
+		policy.RetryOn.ConnectFailure ||
+		len(policy.RetryOn.Statuses) != 1 ||
+		policy.RetryOn.Statuses[0] != 503 {
+		t.Fatalf("effective policy = %+v", policy)
+	}
+	resources.Upstreams[0].Retry.RetryOn.Statuses[0] = 504
+	resources.Routes[0].Resilience.RetryOn.Statuses[0] = 502
+	if snapshot.routes[0].RetryPolicy().RetryOn.Statuses[0] != 503 {
+		t.Fatal("compiled retry policy aliases resources")
+	}
+}
+
 func TestBuilderRejectsInvalidResources(t *testing.T) {
 	base := testResources()
 	tests := []struct {
@@ -200,11 +240,11 @@ func testResources() model.ResourceSet {
 
 func mustCandidate(t *testing.T, resources []model.Upstream) *upstream.Candidate {
 	t.Helper()
-	registry, err := upstream.NewRegistry(64, nil)
+	registry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := registry.Prepare(resources)
+	candidate, err := registry.Prepare(model.ResourceSet{Upstreams: resources})
 	if err != nil {
 		t.Fatal(err)
 	}

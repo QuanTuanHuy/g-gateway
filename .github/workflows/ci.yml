@@ -18,6 +18,14 @@ jobs:
           go-version: 1.26.5
           cache: true
           cache-dependency-path: go.sum
+      - name: Install Staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@2026.1
+      - name: Install Revive
+        run: go install github.com/mgechev/revive@v1.15.0
+      - name: Check Go documentation
+        run: |
+          staticcheck -tests=false ./...
+          revive -set_exit_status -config revive.toml -formatter default ./...
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet

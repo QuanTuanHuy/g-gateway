@@ -26,6 +26,8 @@ func (r *Registry) runReaper() {
 }
 
 func (r *Registry) signalReaper() {
+	// Wake-ups are coalesced so final request-path release never blocks on
+	// asynchronous cleanup.
 	select {
 	case r.reapWake <- struct{}{}:
 	default:
@@ -42,6 +44,8 @@ func (r *Registry) reapNow() {
 	survivors := make([]*PlanSet, 0, len(r.retired))
 	finalized := make([]*PlanSet, 0)
 	for _, set := range r.retired {
+		// A retired generation is eligible only after its final ownership and
+		// request reference has drained; finalized prevents duplicate cleanup.
 		if set.refs.Load() != 0 || !set.finalized.CompareAndSwap(false, true) {
 			survivors = append(survivors, set)
 			continue
@@ -57,12 +61,26 @@ func (r *Registry) reapNow() {
 		cleanup.ReleasedEndpoints += released.ReleasedEndpoints
 		cleanup.ReleasedTransports += released.ReleasedTransports
 		cleanup.ClosedTransports += released.ClosedTransports
+		cleanup.ReleasedHealthTrackers += released.ReleasedHealthTrackers
+		cleanup.ReleasedRetryBudgets += released.ReleasedRetryBudgets
+		for _, delta := range released.TransportGenerations {
+			addTransportGenerationDelta(
+				&cleanup.TransportGenerations,
+				delta.Action,
+				delta.TLS,
+				delta.Protocol,
+				delta.Count,
+			)
+		}
 		transports = append(transports, closed...)
+		// Clearing ownership makes the exactly-once reference release explicit
+		// even if a future reaper pass observes the object again.
 		set.owned = resourceRefs{}
 	}
 	cleanup.Current = r.statsLocked()
 	r.mu.Unlock()
 
+	// Close idle connections after unlocking the registry.
 	closeTransports(transports)
 	if len(finalized) > 0 {
 		r.notifyCleaned(cleanup)

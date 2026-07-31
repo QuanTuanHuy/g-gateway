@@ -41,11 +41,11 @@ func benchmarkRegistryReconcile(
 	revision []model.Upstream,
 ) {
 	b.Helper()
-	registry, err := NewRegistry(64, nil)
+	registry, err := NewRegistry(RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		b.Fatal(err)
 	}
-	initial, err := registry.Prepare(baseline)
+	initial, err := registry.Prepare(model.ResourceSet{Upstreams: baseline})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func benchmarkRegistryReconcile(
 	b.ResetTimer()
 	b.StartTimer()
 	for b.Loop() {
-		candidate, prepareErr := registry.Prepare(revision)
+		candidate, prepareErr := registry.Prepare(model.ResourceSet{Upstreams: revision})
 		if prepareErr != nil {
 			b.Fatal(prepareErr)
 		}

@@ -206,6 +206,9 @@ type compiledHostPattern struct {
 	specificity hostSpecificity
 }
 
+// NormalizeRequestHost validates and canonicalizes an HTTP host authority. It
+// removes a valid port and one trailing DNS dot, lowercases the host, and
+// returns an error for empty or malformed authorities.
 func NormalizeRequestHost(authority string) (string, error) {
 	if authority == "" || strings.TrimSpace(authority) != authority {
 		return "", fmt.Errorf("host authority must not be empty or contain surrounding whitespace")

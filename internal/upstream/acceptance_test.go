@@ -44,7 +44,7 @@ func TestPhase3AAcceptance(t *testing.T) {
 		profile = fullPhase3AProfile
 	}
 	resources, checksum := generatePhase3AResources(t, profile)
-	registry, err := NewRegistry(64, nil)
+	registry, err := NewRegistry(RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestPhase3AAcceptance(t *testing.T) {
 	var baseline goruntime.MemStats
 	goruntime.ReadMemStats(&baseline)
 	started := time.Now()
-	candidate, err := registry.Prepare(resources)
+	candidate, err := registry.Prepare(model.ResourceSet{Upstreams: resources})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestPhase3AAcceptance(t *testing.T) {
 
 	for swap := 0; swap < profile.swaps; swap++ {
 		reweighted := reweightPhase3AResources(resources, swap+1)
-		nextCandidate, prepareErr := registry.Prepare(reweighted)
+		nextCandidate, prepareErr := registry.Prepare(model.ResourceSet{Upstreams: reweighted})
 		if prepareErr != nil {
 			t.Fatalf("Prepare swap %d error = %v", swap+1, prepareErr)
 		}

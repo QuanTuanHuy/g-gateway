@@ -29,6 +29,40 @@ func (c *continuum) selectIndex(sum uint64) uint32 {
 	return c.indexes[index]
 }
 
+func (c *continuum) selectNext(sum uint64, endpointCount int, selectable func(uint32) bool) (uint32, bool) {
+	if len(c.hashes) == 0 {
+		return c.direct, selectable(c.direct)
+	}
+	start := sort.Search(len(c.hashes), func(i int) bool {
+		return c.hashes[i] >= sum
+	})
+	if start == len(c.hashes) {
+		start = 0
+	}
+	first := c.indexes[start]
+	if selectable(first) {
+		return first, true
+	}
+
+	seen := make([]bool, endpointCount)
+	if int(first) < len(seen) {
+		seen[first] = true
+	}
+	distinct := 1
+	for offset := 1; offset < len(c.hashes) && distinct < endpointCount; offset++ {
+		ordinal := c.indexes[(start+offset)%len(c.hashes)]
+		if int(ordinal) >= len(seen) || seen[ordinal] {
+			continue
+		}
+		seen[ordinal] = true
+		distinct++
+		if selectable(ordinal) {
+			return ordinal, true
+		}
+	}
+	return 0, false
+}
+
 type continuumEndpoint struct {
 	index     uint32
 	identity  string
@@ -60,6 +94,8 @@ func compileContinuum(endpoints []weightedEndpoint) (continuum, error) {
 		return continuum{}, fmt.Errorf("at least one positive endpoint weight is required")
 	}
 	if len(active) == 1 {
+		// The direct representation avoids allocating a continuum for the
+		// single-endpoint case.
 		return continuum{direct: active[0].index}, nil
 	}
 	if len(active) > MaxContinuumPoints {
@@ -84,6 +120,8 @@ func compileContinuum(endpoints []weightedEndpoint) (continuum, error) {
 		}
 	} else {
 		pointCount = MaxContinuumPoints
+		// Capping preserves at least one point per active endpoint, then
+		// apportions the remaining bounded points deterministically by weight.
 		assignCappedContinuumPoints(active, normalizedSum, pointCount)
 	}
 
@@ -158,6 +196,8 @@ func sortContinuumPoints(points []continuumPoint) {
 			return points[i].hash < points[j].hash
 		}
 		if points[i].identity != points[j].identity {
+			// Canonical identity and virtual index make hash collisions stable
+			// across builds and declaration order.
 			return points[i].identity < points[j].identity
 		}
 		return points[i].virtualIndex < points[j].virtualIndex

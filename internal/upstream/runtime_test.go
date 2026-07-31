@@ -15,13 +15,13 @@ import (
 )
 
 func TestNewBuildsHTTP1OnlyTransport(t *testing.T) {
-	runtime := newTransportRuntime(testResource("http://upstream:8080").Transport)
+	runtime := newTransportRuntime(testTransportProfile(t, "http://upstream:8080"), nil)
 	endpoint, err := newEndpointRuntime("baseline", testResource("http://upstream:8080").Endpoints[0])
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	transport := runtime.transport
+	transport := runtime.production
 	if transport.Protocols == nil || !transport.Protocols.HTTP1() || transport.Protocols.HTTP2() {
 		t.Fatalf("Protocols = %+v, want HTTP/1 only", transport.Protocols)
 	}
@@ -47,7 +47,7 @@ func TestRuntimeReusesConnections(t *testing.T) {
 	server.Start()
 	defer server.Close()
 
-	runtime := newTransportRuntime(testResource(server.URL).Transport)
+	runtime := newTransportRuntime(testTransportProfile(t, server.URL), nil)
 	defer runtime.CloseIdleConnections()
 
 	for range 2 {
@@ -77,7 +77,7 @@ func TestRuntimeHonorsResponseHeaderTimeout(t *testing.T) {
 
 	resource := testResource(server.URL)
 	resource.Transport.ResponseHeaderTimeout = 30 * time.Millisecond
-	runtime := newTransportRuntime(resource.Transport)
+	runtime := newTransportRuntime(testTransportProfileForResource(t, resource), nil)
 	defer runtime.CloseIdleConnections()
 
 	_, err := runtime.RoundTrip(mustRequest(t, context.Background(), server.URL))
@@ -100,7 +100,7 @@ func TestRoundTripUsesRequestCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runtime := newTransportRuntime(testResource(server.URL).Transport)
+	runtime := newTransportRuntime(testTransportProfile(t, server.URL), nil)
 	defer runtime.CloseIdleConnections()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -149,7 +149,7 @@ func TestCloseIdleConnections(t *testing.T) {
 	server.Start()
 	defer server.Close()
 
-	runtime := newTransportRuntime(testResource(server.URL).Transport)
+	runtime := newTransportRuntime(testTransportProfile(t, server.URL), nil)
 	response, err := runtime.RoundTrip(mustRequest(t, context.Background(), server.URL))
 	if err != nil {
 		t.Fatal(err)
@@ -178,6 +178,20 @@ func testResource(endpoint string) model.Upstream {
 			MaxIdleConnectionsPerHost: 32,
 		},
 	}
+}
+
+func testTransportProfile(t *testing.T, endpoint string) transportProfile {
+	t.Helper()
+	return testTransportProfileForResource(t, testResource(endpoint))
+}
+
+func testTransportProfileForResource(t *testing.T, resource model.Upstream) transportProfile {
+	t.Helper()
+	profile, err := compileTransportProfile(resource, materialIndex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile
 }
 
 func mustRequest(t *testing.T, ctx context.Context, target string) *http.Request {

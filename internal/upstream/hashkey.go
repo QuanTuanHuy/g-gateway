@@ -52,6 +52,8 @@ func compileHashKey(policy model.HashKeyPolicy) (hashKeyExtractor, error) {
 func (e hashKeyExtractor) sum64(request *http.Request) (uint64, bool) {
 	var digest xxhash.Digest
 	digest.Reset()
+	// Source order and length-prefixed components are part of the digest, so
+	// differently partitioned compound values cannot become ambiguous.
 	writeHashUvarint(&digest, uint64(len(e.sources)))
 
 	anyPresent := false
@@ -109,6 +111,9 @@ func (e hashKeyExtractor) sum64(request *http.Request) (uint64, bool) {
 		return digest.Sum64(), false
 	}
 
+	// Fall back to the remote address only when every configured dynamic
+	// component is absent. Missing markers above distinguish absence from an
+	// explicitly present empty value.
 	digest.Reset()
 	writeHashUvarint(&digest, 1)
 	writeHashByte(&digest, hashSourceTag(model.HashSourceRemoteAddr))

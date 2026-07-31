@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,12 +33,44 @@ type selectionEntry struct {
 	refs  int
 }
 
+type healthEntry struct {
+	runtime      *EndpointHealth
+	registration *healthRegistration
+	refs         int
+}
+
+type budgetEntry struct {
+	runtime *retryBudget
+	refs    int
+}
+
 type resourceRefs struct {
 	endpointIDs   []string
 	transportKeys []transportKey
 	selectionKeys []selectionKey
+	healthKeys    []healthKey
+	budgetKeys    []budgetKey
 }
 
+// RegistryOptions configures bounded retired generations, active-health
+// workers, the ready queue, and optional lifecycle observation.
+type RegistryOptions struct {
+	// MaxRetiredSnapshots bounds plan sets retained while request references
+	// drain and must be between 1 and 1024.
+	MaxRetiredSnapshots int
+	// HealthWorkers is the fixed active-health worker count and must be between
+	// 1 and 256.
+	HealthWorkers int
+	// HealthQueueCapacity bounds ready probes and must be between 1 and 65536.
+	HealthQueueCapacity int
+	// Observer receives bounded synchronous lifecycle events; nil disables
+	// observation.
+	Observer Observer
+}
+
+// Registry transactionally prepares and shares endpoint, transport, selection,
+// health, and retry runtimes across immutable plan sets. It is safe for
+// concurrent use and owns background health and reaper goroutines until Close.
 type Registry struct {
 	mu                  sync.Mutex
 	maxRetiredSnapshots int
@@ -45,6 +79,10 @@ type Registry struct {
 	endpoints           map[string]*endpointEntry
 	transports          map[transportKey]*transportEntry
 	selections          map[selectionKey]*selectionEntry
+	health              map[healthKey]*healthEntry
+	budgets             map[budgetKey]*budgetEntry
+	coordinator         *HealthCoordinator
+	generation          atomic.Uint64
 	activePlanSets      int
 	retired             []*PlanSet
 	reapWake            chan struct{}
@@ -53,6 +91,9 @@ type Registry struct {
 	stopReaperOnce      sync.Once
 }
 
+// Candidate owns all resources acquired by one successful Prepare transaction.
+// Exactly one terminal Commit or Rollback should follow; subsequent terminal
+// calls are idempotent no-ops.
 type Candidate struct {
 	registry *Registry
 	plans    map[string]*Plan
@@ -61,16 +102,28 @@ type Candidate struct {
 	done     atomic.Bool
 }
 
-func NewRegistry(maxRetiredSnapshots int, observer Observer) (*Registry, error) {
-	if maxRetiredSnapshots < 1 || maxRetiredSnapshots > 1024 {
+// NewRegistry validates options, starts the bounded health coordinator and
+// asynchronous reaper, and returns their owning Registry.
+func NewRegistry(options RegistryOptions) (*Registry, error) {
+	if options.MaxRetiredSnapshots < 1 || options.MaxRetiredSnapshots > 1024 {
 		return nil, fmt.Errorf("max retired snapshots must be between 1 and 1024")
 	}
+	coordinator, err := newHealthCoordinator(healthCoordinatorOptions{
+		Workers:       options.HealthWorkers,
+		QueueCapacity: options.HealthQueueCapacity,
+	})
+	if err != nil {
+		return nil, err
+	}
 	registry := &Registry{
-		maxRetiredSnapshots: maxRetiredSnapshots,
-		observer:            observer,
+		maxRetiredSnapshots: options.MaxRetiredSnapshots,
+		observer:            options.Observer,
 		endpoints:           make(map[string]*endpointEntry),
 		transports:          make(map[transportKey]*transportEntry),
 		selections:          make(map[selectionKey]*selectionEntry),
+		health:              make(map[healthKey]*healthEntry),
+		budgets:             make(map[budgetKey]*budgetEntry),
+		coordinator:         coordinator,
 		reapWake:            make(chan struct{}, 1),
 		reapStop:            make(chan struct{}),
 		reapDone:            make(chan struct{}),
@@ -79,12 +132,28 @@ func NewRegistry(maxRetiredSnapshots int, observer Observer) (*Registry, error) 
 	return registry, nil
 }
 
-func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
+// Prepare clones and normalizes the upstream slice, resolves immutable TLS
+// material from the complete resource set, and transactionally acquires every
+// runtime needed by a candidate plan set. It reuses resources by canonical
+// keys, rolls back all acquisitions on failure, and leaves committed plan sets
+// unchanged. Route and service objects are not retained. The caller must
+// Commit or Rollback a successful candidate.
+//
+// Prepare returns stable ConfigError codes for closed registries, retained
+// generation backpressure, invalid configuration, and balancer budget
+// overflow.
+func (r *Registry) Prepare(resources model.ResourceSet) (*Candidate, error) {
 	if err := r.prepareAllowed(); err != nil {
 		r.notifyError(err.Code, err)
 		return nil, err
 	}
-	normalized, err := Normalize(resources)
+	resources = model.CloneResourceSet(resources)
+	normalized, err := Normalize(resources.Upstreams)
+	if err != nil {
+		r.notifyError(configErrorCode(err), err)
+		return nil, err
+	}
+	materials, err := newMaterialIndex(resources)
 	if err != nil {
 		r.notifyError(configErrorCode(err), err)
 		return nil, err
@@ -101,19 +170,26 @@ func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 	owned := resourceRefs{}
 	stats := PrepareStats{}
 	for upstreamIndex, resource := range normalized {
-		plan, compileErr := r.preparePlanLocked(resource, &owned, &stats)
+		profile, compileErr := compileTransportProfile(resource, materials)
+		if compileErr == nil {
+			plan, planErr := r.preparePlanLocked(resource, profile, &owned, &stats)
+			compileErr = planErr
+			if planErr == nil {
+				plans[resource.ID] = plan
+				stats.WRRSlots += len(plan.wrr.schedule)
+				stats.HashPoints += len(plan.continuum.hashes)
+			}
+		}
 		if compileErr != nil {
 			cleanup, transports := r.releaseRefsLocked(owned)
 			stats.Current = cleanup.Current
 			r.mu.Unlock()
 			closeTransports(transports)
+			r.notifyCleaned(cleanup)
 			r.notifyRolledBack(stats)
 			r.notifyError(configErrorCode(compileErr), compileErr)
 			return nil, compileErr
 		}
-		plans[resource.ID] = plan
-		stats.WRRSlots += len(plan.wrr.schedule)
-		stats.HashPoints += len(plan.continuum.hashes)
 		if stats.WRRSlots > MaxSnapshotWRRSlots || stats.HashPoints > MaxSnapshotHashPoints {
 			err := configError(
 				"BALANCER_BUDGET_EXCEEDED",
@@ -125,6 +201,7 @@ func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 			stats.Current = cleanup.Current
 			r.mu.Unlock()
 			closeTransports(transports)
+			r.notifyCleaned(cleanup)
 			r.notifyRolledBack(stats)
 			r.notifyError(err.Code, err)
 			return nil, err
@@ -142,15 +219,34 @@ func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 	return candidate, nil
 }
 
-func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRefs, stats *PrepareStats) (*Plan, error) {
-	transportKey := makeTransportKey(resource.Transport)
+func (r *Registry) preparePlanLocked(
+	resource model.Upstream,
+	profile transportProfile,
+	owned *resourceRefs,
+	stats *PrepareStats,
+) (*Plan, error) {
+	transportKey := makeTransportKey(profile)
 	transport := r.transports[transportKey]
 	if transport == nil {
-		transport = &transportEntry{runtime: newTransportRuntime(resource.Transport)}
+		transport = &transportEntry{runtime: newTransportRuntime(profile, r)}
 		r.transports[transportKey] = transport
 		stats.CreatedTransports++
+		addTransportGenerationDelta(
+			&stats.TransportGenerations,
+			"create",
+			transportKey.tlsEnabled,
+			transportKey.protocol,
+			1,
+		)
 	} else {
 		stats.ReusedTransports++
+		addTransportGenerationDelta(
+			&stats.TransportGenerations,
+			"reuse",
+			transportKey.tlsEnabled,
+			transportKey.protocol,
+			1,
+		)
 	}
 	transport.refs++
 	owned.transportKeys = append(owned.transportKeys, transportKey)
@@ -185,12 +281,52 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 		entry.refs++
 		owned.endpointIDs = append(owned.endpointIDs, identity)
 		if endpoint.Weight > 0 {
+			var health *EndpointHealth
+			if resource.Health.Active != nil {
+				key := makeHealthKey(identity, resource.Health, transportKey)
+				healthRuntime := r.health[key]
+				if healthRuntime == nil {
+					health = newEndpointHealth(identity, resource.Health, r.generation.Add(1))
+					registration := r.coordinator.Register(ProbeTarget{
+						EndpointID: identity,
+						URL:        entry.runtime.target,
+						Generation: health.Generation(),
+						Transport:  transport.runtime.ProbeTransport(),
+						Policy:     *resource.Health.Active,
+					}, health)
+					healthRuntime = &healthEntry{runtime: health, registration: registration}
+					r.health[key] = healthRuntime
+					stats.CreatedHealthTrackers++
+				} else {
+					health = healthRuntime.runtime
+					stats.ReusedHealthTrackers++
+				}
+				healthRuntime.refs++
+				owned.healthKeys = append(owned.healthKeys, key)
+			}
 			planEndpoints = append(planEndpoints, planEndpoint{
 				runtime:  entry.runtime,
+				health:   health,
 				identity: identity,
 				weight:   endpoint.Weight,
 			})
 		}
+	}
+
+	var budget *retryBudget
+	if resource.Retry.Budget.Burst > 0 && resource.Retry.Budget.MaxInflight > 0 {
+		key := makeBudgetKey(resource.ID, resource.Retry.Budget)
+		entry := r.budgets[key]
+		if entry == nil {
+			entry = &budgetEntry{runtime: newRetryBudget(resource.Retry.Budget)}
+			r.budgets[key] = entry
+			stats.CreatedRetryBudgets++
+		} else {
+			stats.ReusedRetryBudgets++
+		}
+		entry.refs++
+		owned.budgetKeys = append(owned.budgetKeys, key)
+		budget = entry.runtime
 	}
 
 	weighted := make([]weightedEndpoint, len(planEndpoints))
@@ -205,6 +341,13 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 		algorithm: resource.Balancer.Type,
 		endpoints: planEndpoints,
 		transport: transport.runtime,
+		budget:    budget,
+	}
+	for _, endpoint := range planEndpoints {
+		if endpoint.health != nil {
+			key := makeHealthKey(endpoint.identity, resource.Health, transportKey)
+			plan.healthRegistrations = append(plan.healthRegistrations, r.health[key].registration)
+		}
 	}
 	switch resource.Balancer.Type {
 	case model.BalancerWeightedRoundRobin:
@@ -231,10 +374,63 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 	return plan, nil
 }
 
+// Stats returns a point-in-time snapshot of registry resource and plan-set
+// gauges.
 func (r *Registry) Stats() RegistryStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.statsLocked()
+}
+
+// ResilienceStats returns current per-upstream health and retry gauges sorted
+// by upstream ID.
+func (r *Registry) ResilienceStats() []ResilienceStats {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	byUpstream := make(map[string]*ResilienceStats)
+	get := func(upstreamID string) *ResilienceStats {
+		stats := byUpstream[upstreamID]
+		if stats == nil {
+			stats = &ResilienceStats{UpstreamID: upstreamID}
+			byUpstream[upstreamID] = stats
+		}
+		return stats
+	}
+	for key, entry := range r.health {
+		upstreamID := key.endpointIdentity
+		if separator := strings.IndexByte(upstreamID, 0); separator >= 0 {
+			upstreamID = upstreamID[:separator]
+		}
+		stats := get(upstreamID)
+		switch entry.runtime.State() {
+		case HealthHealthy:
+			stats.HealthyEndpoints++
+		case HealthUnhealthy:
+			stats.UnhealthyEndpoints++
+		default:
+			stats.UnknownEndpoints++
+		}
+	}
+	for key, entry := range r.budgets {
+		stats := get(key.upstreamID)
+		stats.RetryInflight += entry.runtime.Inflight()
+		stats.RetryBudgetTokens += float64(entry.runtime.Credits()) / float64(retryCreditUnit)
+	}
+	result := make([]ResilienceStats, 0, len(byUpstream))
+	for _, stats := range byUpstream {
+		result = append(result, *stats)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].UpstreamID < result[j].UpstreamID })
+	return result
+}
+
+// HealthCoordinatorStats returns current scheduler statistics, or the zero
+// value for a nil registry or coordinator.
+func (r *Registry) HealthCoordinatorStats() HealthCoordinatorStats {
+	if r == nil || r.coordinator == nil {
+		return HealthCoordinatorStats{}
+	}
+	return r.coordinator.Stats()
 }
 
 func (r *Registry) statsLocked() RegistryStats {
@@ -242,11 +438,18 @@ func (r *Registry) statsLocked() RegistryStats {
 		LiveEndpoints:       len(r.endpoints),
 		LiveTransports:      len(r.transports),
 		LiveSelectionStates: len(r.selections),
+		LiveHealthTrackers:  len(r.health),
+		LiveRetryBudgets:    len(r.budgets),
 		ActivePlanSets:      r.activePlanSets,
 		RetiredPlanSets:     len(r.retired),
 	}
 }
 
+// Close prevents future preparation, reaps retired plan sets, stops the reaper,
+// and closes the health coordinator after all active and acquired plan-set
+// references are released. It is context-aware and returns an error equal to or
+// wrapping ctx.Err when cleanup cannot finish before the deadline. Callers
+// must retire active plan sets before expecting Close to complete.
 func (r *Registry) Close(ctx context.Context) error {
 	r.mu.Lock()
 	r.closed = true
@@ -260,6 +463,8 @@ func (r *Registry) Close(ctx context.Context) error {
 		if stats.LiveEndpoints == 0 &&
 			stats.LiveTransports == 0 &&
 			stats.LiveSelectionStates == 0 &&
+			stats.LiveHealthTrackers == 0 &&
+			stats.LiveRetryBudgets == 0 &&
 			stats.ActivePlanSets == 0 &&
 			stats.RetiredPlanSets == 0 {
 			r.stopReaperOnce.Do(func() {
@@ -267,7 +472,7 @@ func (r *Registry) Close(ctx context.Context) error {
 			})
 			select {
 			case <-r.reapDone:
-				return nil
+				return r.coordinator.Close(ctx)
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -301,6 +506,7 @@ func (r *Registry) prepareErrorLocked() *ConfigError {
 	return nil
 }
 
+// Plan returns the prepared immutable plan identified by id.
 func (c *Candidate) Plan(id string) (*Plan, bool) {
 	if c == nil {
 		return nil, false
@@ -309,6 +515,9 @@ func (c *Candidate) Plan(id string) (*Plan, bool) {
 	return plan, ok
 }
 
+// Commit atomically transfers the candidate's resource ownership to a new
+// PlanSet with one initial owner reference. It returns nil after any earlier
+// Commit or Rollback.
 func (c *Candidate) Commit() *PlanSet {
 	if c == nil || !c.done.CompareAndSwap(false, true) {
 		return nil
@@ -326,6 +535,9 @@ func (c *Candidate) Commit() *PlanSet {
 	return set
 }
 
+// Rollback idempotently releases every candidate-owned resource, closes newly
+// unreferenced transports outside the registry mutex, and reports cleanup to
+// the observer. It is a no-op after Commit or an earlier Rollback.
 func (c *Candidate) Rollback() {
 	if c == nil || !c.done.CompareAndSwap(false, true) {
 		return
@@ -334,6 +546,7 @@ func (c *Candidate) Rollback() {
 	c.stats.Current = cleanup.Current
 	c.owned = resourceRefs{}
 	closeTransports(transports)
+	c.registry.notifyCleaned(cleanup)
 	c.registry.notifyRolledBack(c.stats)
 }
 
@@ -359,6 +572,9 @@ func (r *Registry) releaseRefs(owned resourceRefs) (CleanupStats, []*transportRu
 }
 
 func (r *Registry) releaseRefsLocked(owned resourceRefs) (CleanupStats, []*transportRuntime) {
+	// Each key in owned represents exactly one acquired reference. Terminal
+	// candidate actions and final plan-set reaping clear owned after this
+	// function so no reference can be decremented twice.
 	cleanup := CleanupStats{}
 	for _, identity := range owned.endpointIDs {
 		entry := r.endpoints[identity]
@@ -383,6 +599,13 @@ func (r *Registry) releaseRefsLocked(owned resourceRefs) (CleanupStats, []*trans
 			delete(r.transports, key)
 			transports = append(transports, entry.runtime)
 			cleanup.ClosedTransports++
+			addTransportGenerationDelta(
+				&cleanup.TransportGenerations,
+				"retire",
+				key.tlsEnabled,
+				key.protocol,
+				1,
+			)
 		}
 	}
 	for _, key := range owned.selectionKeys {
@@ -395,11 +618,44 @@ func (r *Registry) releaseRefsLocked(owned resourceRefs) (CleanupStats, []*trans
 			delete(r.selections, key)
 		}
 	}
+	for _, key := range owned.healthKeys {
+		entry := r.health[key]
+		if entry == nil || entry.refs <= 0 {
+			panic("upstream health reference underflow")
+		}
+		entry.refs--
+		cleanup.ReleasedHealthTrackers++
+		if entry.refs == 0 {
+			delete(r.health, key)
+			entry.registration.Retire()
+		}
+	}
+	for _, key := range owned.budgetKeys {
+		entry := r.budgets[key]
+		if entry == nil || entry.refs <= 0 {
+			panic("upstream retry budget reference underflow")
+		}
+		entry.refs--
+		cleanup.ReleasedRetryBudgets++
+		if entry.refs == 0 {
+			delete(r.budgets, key)
+		}
+	}
 	cleanup.Current = r.statsLocked()
 	return cleanup, transports
 }
 
+// StopHealth idempotently prevents future active-health scheduling without
+// closing the registry or waiting for workers.
+func (r *Registry) StopHealth() {
+	if r != nil && r.coordinator != nil {
+		r.coordinator.StopHealth()
+	}
+}
+
 func closeTransports(transports []*transportRuntime) {
+	// Transport cleanup is intentionally performed after releasing the
+	// registry mutex because net/http may do non-trivial pool work.
 	for _, transport := range transports {
 		transport.CloseIdleConnections()
 	}
@@ -411,6 +667,50 @@ func configErrorCode(err error) string {
 		return configErr.Code
 	}
 	return "REGISTRY_PREPARE_FAILED"
+}
+
+func addTransportGenerationDelta(
+	deltas *[]TransportGenerationDelta,
+	action string,
+	tlsEnabled bool,
+	protocol model.TransportProtocol,
+	count int,
+) {
+	if count <= 0 {
+		return
+	}
+	for index := range *deltas {
+		delta := &(*deltas)[index]
+		if delta.Action == action && delta.TLS == tlsEnabled && delta.Protocol == protocol {
+			delta.Count += count
+			return
+		}
+	}
+	*deltas = append(*deltas, TransportGenerationDelta{
+		Action:   action,
+		TLS:      tlsEnabled,
+		Protocol: protocol,
+		Count:    count,
+	})
+}
+
+// ObserveTLSHandshake forwards one terminal TLS handshake through the
+// registry observer panic boundary.
+func (r *Registry) ObserveTLSHandshake(
+	result, mode string,
+	protocol model.TransportProtocol,
+) {
+	r.observe(func(observer Observer) {
+		observer.TLSHandshake(result, mode, protocol)
+	})
+}
+
+// ObserveTLSFailure forwards one typed TLS failure through the registry
+// observer panic boundary.
+func (r *Registry) ObserveTLSFailure(class TLSFailureClass) {
+	r.observe(func(observer Observer) {
+		observer.TLSFailure(class)
+	})
 }
 
 func (r *Registry) notifyPrepared(stats PrepareStats) {

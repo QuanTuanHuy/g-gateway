@@ -12,11 +12,19 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
+// Observer receives synchronous bounded snapshot lifecycle events. Manager
+// operations isolate observer panics.
 type Observer interface {
+	// SnapshotApplied reports a newly published snapshot after the prior plan
+	// set has been retired.
 	SnapshotApplied(Stats)
+	// SnapshotRejected reports a rejected build and its elapsed build duration.
 	SnapshotRejected(*BuildError, time.Duration)
 }
 
+// Manager serializes configuration application and atomically publishes
+// immutable snapshots. It is safe for concurrent Apply, Acquire, Load, stats,
+// health-stop, and close operations.
 type Manager struct {
 	applyMu   sync.Mutex
 	active    atomic.Pointer[Snapshot]
@@ -26,16 +34,26 @@ type Manager struct {
 	closed    atomic.Bool
 }
 
+// Lease retains one snapshot and its upstream plan set for a request. A
+// successful lease must be released; Release is idempotent.
 type Lease struct {
 	snapshot *Snapshot
 	plans    *upstream.PlanSet
 	released atomic.Bool
 }
 
+// NewManager returns a Manager using builder and upstreams. Nil dependencies
+// are reported as stable BuildError values by Apply rather than by the
+// constructor.
 func NewManager(builder *Builder, upstreams *upstream.Registry, observer Observer) *Manager {
 	return &Manager{builder: builder, upstreams: upstreams, observer: observer}
 }
 
+// Apply serializes and transactionally compiles resources for a strictly newer
+// revision. Success atomically publishes the new snapshot before retiring the
+// prior plan set; rejection preserves the last-known-good snapshot. Apply
+// rolls back upstream candidates on every failed path and rejects calls after
+// Close begins.
 func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 	started := time.Now()
 	m.applyMu.Lock()
@@ -82,7 +100,7 @@ func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 		return buildErr
 	}
 
-	candidate, err := m.upstreams.Prepare(resources.Upstreams)
+	candidate, err := m.upstreams.Prepare(resources)
 	if err != nil {
 		buildErr := upstreamBuildError(revision, err)
 		m.notifyRejected(buildErr, time.Since(started))
@@ -137,6 +155,8 @@ func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 	return nil
 }
 
+// Acquire returns a lease for one atomically observed snapshot revision. It
+// reports false when the manager is nil or no current plan set can be retained.
 func (m *Manager) Acquire() (Lease, bool) {
 	if m == nil {
 		return Lease{}, false
@@ -155,6 +175,8 @@ func (m *Manager) Acquire() (Lease, bool) {
 	}
 }
 
+// UpstreamStats returns current upstream registry gauges, or their zero value
+// when the manager or registry is nil.
 func (m *Manager) UpstreamStats() upstream.RegistryStats {
 	if m == nil || m.upstreams == nil {
 		return upstream.RegistryStats{}
@@ -162,6 +184,16 @@ func (m *Manager) UpstreamStats() upstream.RegistryStats {
 	return m.upstreams.Stats()
 }
 
+// StopHealth idempotently prevents future active-health scheduling.
+func (m *Manager) StopHealth() {
+	if m != nil && m.upstreams != nil {
+		m.upstreams.StopHealth()
+	}
+}
+
+// Close serializes against Apply, prevents future publication, removes the
+// active snapshot, retires its plan set, and waits for context-bounded upstream
+// cleanup. It is safe to call more than once.
 func (m *Manager) Close(ctx context.Context) error {
 	if m == nil {
 		return nil
@@ -179,6 +211,8 @@ func (m *Manager) Close(ctx context.Context) error {
 	return m.upstreams.Close(ctx)
 }
 
+// Snapshot returns the retained immutable snapshot, or nil for a nil lease.
+// The pointer remains valid only until Release.
 func (l *Lease) Snapshot() *Snapshot {
 	if l == nil {
 		return nil
@@ -186,6 +220,8 @@ func (l *Lease) Snapshot() *Snapshot {
 	return l.snapshot
 }
 
+// Release idempotently drops the lease's plan-set reference. It is a no-op for
+// a nil lease.
 func (l *Lease) Release() {
 	if l == nil || !l.released.CompareAndSwap(false, true) {
 		return
@@ -193,6 +229,9 @@ func (l *Lease) Release() {
 	l.plans.Release()
 }
 
+// Load returns the currently published snapshot without acquiring a lease.
+// The result is intended for bounded observation only; request processing must
+// use Acquire to retain upstream resources.
 func (m *Manager) Load() *Snapshot {
 	if m == nil {
 		return nil

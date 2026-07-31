@@ -1,3 +1,5 @@
+// Package main implements the bench-report command, which validates benchmark
+// evidence and renders deterministic comparison summaries and verdicts.
 package main
 
 import (

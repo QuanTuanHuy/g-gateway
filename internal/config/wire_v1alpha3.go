@@ -97,6 +97,7 @@ func convertV3(wire documentV3) (BootstrapConfig, model.ResourceSet, error) {
 				},
 			},
 			Transport: transport,
+			Retry:     model.RetryPolicy{MaxAttempts: 1},
 		})
 	}
 	return bootstrap, resources, nil
@@ -116,6 +117,7 @@ func convertTransport(index int, wire transportDocument) (model.TransportConfig,
 		return model.TransportConfig{}, err
 	}
 	return model.TransportConfig{
+		Protocol:                  model.TransportProtocolHTTP1,
 		DialTimeout:               dialTimeout,
 		ResponseHeaderTimeout:     responseHeaderTimeout,
 		IdleConnectionTimeout:     idleConnectionTimeout,

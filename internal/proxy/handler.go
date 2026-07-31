@@ -19,12 +19,21 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	"github.com/QuanTuanHuy/g-gateway/internal/router"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
+	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
+// RuntimeOptions supplies the required snapshot manager, request-body limit,
+// and optional structured logger for a proxy handler.
 type RuntimeOptions struct {
-	Snapshots           *gatewayruntime.Manager
+	// Snapshots is the required source of leased runtime snapshots.
+	Snapshots *gatewayruntime.Manager
+	// MaxRequestBodyBytes is the positive downstream request-body limit in
+	// bytes. Known oversized bodies are rejected before proxying; streaming
+	// bodies are bounded while read.
 	MaxRequestBodyBytes int64
-	Logger              *slog.Logger
+	// Logger receives rate-limited upstream failures; nil selects a discard
+	// logger.
+	Logger *slog.Logger
 }
 
 type handler struct {
@@ -39,14 +48,20 @@ type responsePluginError struct {
 	err error
 }
 
+// Error returns the wrapped response-plugin error text.
 func (e *responsePluginError) Error() string {
 	return e.err.Error()
 }
 
+// Unwrap returns the underlying response-plugin error for errors.Is and
+// errors.As.
 func (e *responsePluginError) Unwrap() error {
 	return e.err
 }
 
+// NewRuntime validates options and returns an HTTP handler that leases one
+// immutable snapshot per request. It rejects a nil snapshot manager and a
+// non-positive request-body limit.
 func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 	if options.Snapshots == nil {
 		return nil, fmt.Errorf("snapshot manager must not be nil")
@@ -65,11 +80,6 @@ func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 	handler.proxy = &httputil.ReverseProxy{
 		Transport: routeTransport{},
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
-			state, ok := requestctx.From(proxyRequest.Out.Context())
-			if !ok || !state.Selection.Valid() {
-				return
-			}
-			proxyRequest.SetURL(state.Selection.Target())
 			proxyRequest.Out.Host = proxyRequest.In.Host
 			removeHopByHopHeaders(proxyRequest.Out.Header)
 			rebuildForwardingHeaders(proxyRequest.Out.Header, proxyRequest.In)
@@ -90,6 +100,11 @@ func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 	return handler, nil
 }
 
+// ServeHTTP leases one snapshot, distinguishes 404 from sorted 405 Allow
+// responses, runs request and final-response plugins, and streams proxy bodies.
+// The effective total timeout is bounded by any earlier client deadline and
+// covers selection, all attempts, and response streaming. Failures before a
+// response is committed map to stable gateway status and error codes.
 func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	lease, ok := h.snapshots.Acquire()
 	if !ok {
@@ -180,21 +195,12 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	selection, err := state.Runtime.Select(request)
-	if err != nil {
-		h.writeMatchedResponse(
-			writer,
-			request,
-			state,
-			http.StatusServiceUnavailable,
-			"UPSTREAM_UNAVAILABLE",
-			"upstream unavailable",
-			nil,
-		)
-		return
+	policy := state.Runtime.RetryPolicy()
+	if policy.TotalTimeout > 0 {
+		ctx, cancel := context.WithTimeout(request.Context(), policy.TotalTimeout)
+		defer cancel()
+		request = request.WithContext(ctx)
 	}
-	state.Selection = selection
-	state.Attempt = 1
 
 	if request.Body != nil {
 		request.Body = http.MaxBytesReader(writer, request.Body, h.maxRequestBodyBytes)
@@ -204,8 +210,11 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *handler) handleProxyError(writer http.ResponseWriter, request *http.Request, err error) {
-	if request.Context().Err() != nil {
+	if errors.Is(request.Context().Err(), context.Canceled) {
 		return
+	}
+	if request.ProtoMajor == 1 && request.ContentLength != 0 {
+		writer.Header().Set("Connection", "close")
 	}
 	state, matched := requestctx.From(request.Context())
 	var responseHookError *responsePluginError
@@ -232,22 +241,51 @@ func (h *handler) handleProxyError(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	if h.logLimiter.Allow(time.Now()) {
-		h.logger.Error("upstream request failed", "error", err)
+		h.logger.Error(
+			"upstream request failed",
+			"class",
+			publicUpstreamErrorClass(err),
+		)
 	}
-	var netError net.Error
 	status := http.StatusBadGateway
 	code := "UPSTREAM_CONNECTION_FAILED"
 	message := "upstream connection failed"
-	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netError) && netError.Timeout() {
+	if errors.Is(err, upstream.ErrNoHealthyEndpoint) {
+		status = http.StatusServiceUnavailable
+		code = "UPSTREAM_UNHEALTHY"
+		message = "upstream unhealthy"
+	} else if isUpstreamTimeout(err) {
 		status = http.StatusGatewayTimeout
 		code = "UPSTREAM_TIMEOUT"
 		message = "upstream timeout"
+	} else if upstream.IsTLSFailure(err) {
+		code = "UPSTREAM_TLS_FAILED"
+		message = "upstream TLS failed"
 	}
 	if matched && state.Runtime != nil {
 		h.writeMatchedResponse(writer, request, state, status, code, message, nil)
 		return
 	}
 	writeError(writer, status, code, message)
+}
+
+func publicUpstreamErrorClass(err error) string {
+	if errors.Is(err, upstream.ErrNoHealthyEndpoint) {
+		return "unhealthy"
+	}
+	if isUpstreamTimeout(err) {
+		return "timeout"
+	}
+	if upstream.IsTLSFailure(err) {
+		return "tls"
+	}
+	return "connection"
+}
+
+func isUpstreamTimeout(err error) bool {
+	var networkError net.Error
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.As(err, &networkError) && networkError.Timeout()
 }
 
 func (h *handler) writeMatchedResponse(
@@ -331,6 +369,8 @@ type errorLogLimiter struct {
 	nextLog time.Time
 }
 
+// Allow permits at most one upstream error log per one-second window and is
+// safe for concurrent use.
 func (l *errorLogLimiter) Allow(now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

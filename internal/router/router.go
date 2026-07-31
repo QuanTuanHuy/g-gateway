@@ -11,13 +11,22 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 )
 
+// RouteSpec associates a canonical route match with the caller's stable route
+// index and explicit priority.
 type RouteSpec struct {
-	Index    int
-	ID       string
+	// Index is returned in Result when this route wins.
+	Index int
+	// ID uniquely identifies the route and is the final deterministic
+	// precedence tie-breaker.
+	ID string
+	// Priority is compared before compiled host, path, and predicate
+	// specificity.
 	Priority int
-	Match    model.RouteMatch
+	// Match contains the canonical HTTP match expression to compile.
+	Match model.RouteMatch
 }
 
+// Router is an immutable compiled route index safe for concurrent matching.
 type Router struct {
 	exactHosts    map[string]*pathNode
 	wildcardHosts map[string]*pathNode
@@ -55,14 +64,25 @@ type precedenceKey struct {
 	routeID        string
 }
 
+// Result describes a successful route match, a method-only mismatch, or no
+// match. Params offsets refer to the request URL path passed to Match.
 type Result struct {
-	Found            bool
+	// Found reports that RouteIndex and Params identify the winning route.
+	Found bool
+	// MethodNotAllowed reports that path, host, and predicates matched but no
+	// route accepted the request method.
 	MethodNotAllowed bool
-	RouteIndex       int
-	Params           []requestctx.ParamSpan
-	Allow            []string
+	// RouteIndex is the caller-provided index of the winning route.
+	RouteIndex int
+	// Params contains byte spans captured from the matched request path.
+	Params []requestctx.ParamSpan
+	// Allow is the sorted, deduplicated method set for a method-only mismatch.
+	Allow []string
 }
 
+// Compile builds an immutable deterministic Router from routes. It rejects
+// empty input, empty or duplicate IDs, invalid match expressions, and duplicate
+// canonical priority-plus-match expressions.
 func Compile(routes []RouteSpec) (*Router, error) {
 	if len(routes) == 0 {
 		return nil, fmt.Errorf("routes must not be empty")
@@ -284,6 +304,9 @@ func comparePrecedence(left, right precedenceKey) int {
 	return 0
 }
 
+// Match returns the highest-precedence route for request. It distinguishes a
+// method-only mismatch from no match and may return ErrInvalidQuery for
+// malformed query escaping.
 func (r *Router) Match(request *http.Request) (Result, error) {
 	path := request.URL.Path
 	if path == "" {
