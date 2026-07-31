@@ -1,8 +1,15 @@
 package config
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +17,143 @@ import (
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
+	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
 )
+
+func TestDecodeValidV1Alpha5TLSResourcesAndTransport(t *testing.T) {
+	bootstrap, resources, err := Decode(strings.NewReader(validV5Document(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.Runtime.Health.Workers != DefaultHealthWorkers {
+		t.Fatalf("health workers = %d", bootstrap.Runtime.Health.Workers)
+	}
+	if len(resources.Certificates) != 1 || len(resources.TrustBundles) != 1 {
+		t.Fatalf("material counts certificates=%d bundles=%d", len(resources.Certificates), len(resources.TrustBundles))
+	}
+	if resources.Certificates[0].Fingerprint() == (tlsmaterial.Fingerprint{}) ||
+		resources.TrustBundles[0].Fingerprint() == (tlsmaterial.Fingerprint{}) {
+		t.Fatal("decoded material fingerprint is zero")
+	}
+	transport := resources.Upstreams[0].Transport
+	if transport.Protocol != model.TransportProtocolHTTP2 || transport.TLS == nil {
+		t.Fatalf("transport = %+v", transport)
+	}
+	if transport.TLS.TrustBundleRef != "internal-ca" ||
+		transport.TLS.ClientCertificateRef != "orders-client" ||
+		transport.TLS.ServerName != "orders.internal" {
+		t.Fatalf("TLS policy = %+v", transport.TLS)
+	}
+}
+
+func TestDecodeV1Alpha5DefaultsProtocolToAuto(t *testing.T) {
+	document := strings.Replace(validV5Document(t), "      protocol: http2\n", "", 1)
+	_, resources, err := Decode(strings.NewReader(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resources.Upstreams[0].Transport.Protocol != model.TransportProtocolAuto {
+		t.Fatalf("protocol = %q, want auto", resources.Upstreams[0].Transport.Protocol)
+	}
+}
+
+func TestDecodeV1Alpha5RejectsUnknownAndDuplicateMaterial(t *testing.T) {
+	valid := validV5Document(t)
+	tests := []struct {
+		name    string
+		old     string
+		new     string
+		wantErr string
+	}{
+		{
+			name:    "unknown material field",
+			old:     "    ca_file:",
+			new:     "    unknown: true\n    ca_file:",
+			wantErr: "unknown",
+		},
+		{
+			name:    "cross-kind duplicate ID",
+			old:     "  - id: orders-client",
+			new:     "  - id: internal-ca",
+			wantErr: "duplicate TLS material id",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := replaceOnce(t, valid, test.old, test.new)
+			if _, _, err := Decode(strings.NewReader(document)); err == nil ||
+				!strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Decode() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateMaterialDocumentsV5RejectsResourceLimit(t *testing.T) {
+	certificates := make([]certificateDocumentV5, tlsmaterial.MaxMaterialResources+1)
+	if err := validateMaterialDocumentsV5(certificates, nil); err == nil ||
+		!strings.Contains(err.Error(), "maximum") {
+		t.Fatalf("validateMaterialDocumentsV5() error = %v", err)
+	}
+}
+
+func TestDecodeV1Alpha5RejectsMissingAndOversizedMaterialFiles(t *testing.T) {
+	valid := validV5Document(t)
+	missing := filepath.Join(t.TempDir(), "missing-ca.pem")
+	oversized := filepath.Join(t.TempDir(), "oversized-ca.pem")
+	if err := os.WriteFile(
+		oversized,
+		bytes.Repeat([]byte{'x'}, int(tlsmaterial.MaxCAFileBytes)+1),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		path    string
+		wantErr string
+	}{
+		{name: "missing", path: missing, wantErr: "open"},
+		{name: "oversized", path: oversized, wantErr: "exceeds"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := replaceYAMLScalar(t, valid, "    ca_file: ", filepath.ToSlash(test.path))
+			bootstrap, resources, err := Decode(strings.NewReader(document))
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Decode() error = %v, want %q", err, test.wantErr)
+			}
+			if bootstrap != (BootstrapConfig{}) ||
+				len(resources.Routes) != 0 ||
+				len(resources.Certificates) != 0 ||
+				len(resources.TrustBundles) != 0 {
+				t.Fatalf("Decode() returned partial bootstrap=%+v resources=%+v", bootstrap, resources)
+			}
+		})
+	}
+}
+
+func TestDecodeLegacyVersionsNormalizeToHTTP1WithoutTLS(t *testing.T) {
+	certificateFile, privateKeyFile := writeTLSFiles(t)
+	documents := []string{
+		validDocument(certificateFile, privateKeyFile),
+		validV2Document(certificateFile, privateKeyFile),
+		validV3Document(t),
+		strings.Replace(validV3Document(t), "gateway/v1alpha3", "gateway/v1alpha4", 1),
+	}
+	for _, document := range documents {
+		_, resources, err := Decode(strings.NewReader(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, upstream := range resources.Upstreams {
+			if upstream.Transport.Protocol != model.TransportProtocolHTTP1 ||
+				upstream.Transport.TLS != nil {
+				t.Fatalf("legacy transport = %+v", upstream.Transport)
+			}
+		}
+	}
+}
 
 func TestDecodeValidV1Alpha3(t *testing.T) {
 	bootstrap, resources, err := Decode(strings.NewReader(validV3Document(t)))
@@ -472,6 +615,22 @@ func replaceOnce(t *testing.T, document, old, new string) string {
 	return strings.Replace(document, old, new, 1)
 }
 
+func replaceYAMLScalar(t *testing.T, document, prefix, value string) string {
+	t.Helper()
+	start := strings.Index(document, prefix)
+	if start < 0 {
+		t.Fatalf("document does not contain %q", prefix)
+	}
+	valueStart := start + len(prefix)
+	valueEnd := strings.IndexByte(document[valueStart:], '\n')
+	if valueEnd < 0 {
+		valueEnd = len(document)
+	} else {
+		valueEnd += valueStart
+	}
+	return document[:valueStart] + value + document[valueEnd:]
+}
+
 func validDocument(certFile, keyFile string) string {
 	return fmt.Sprintf(`api_version: gateway/v1alpha1
 
@@ -653,4 +812,83 @@ upstreams:
       max_idle_connections: 1024
       max_idle_connections_per_host: 1024
 `, certFile, keyFile)
+}
+
+func validV5Document(t *testing.T) string {
+	t.Helper()
+	certificateFile, privateKeyFile, caFile := writeV5MaterialFiles(t)
+	document := strings.Replace(validV3Document(t), "gateway/v1alpha3", "gateway/v1alpha5", 1)
+	document = strings.Replace(document, "http://upstream-a:8080", "https://127.0.0.1:8443", 1)
+	document = strings.Replace(document, "http://upstream-b:8080", "https://127.0.0.2:8443", 1)
+	document = strings.Replace(document,
+		"routes:\n",
+		fmt.Sprintf(`trust_bundles:
+  - id: internal-ca
+    ca_file: %s
+
+certificates:
+  - id: orders-client
+    certificate_file: %s
+    private_key_file: %s
+
+routes:
+`, filepath.ToSlash(caFile), filepath.ToSlash(certificateFile), filepath.ToSlash(privateKeyFile)),
+		1,
+	)
+	document = strings.Replace(document,
+		"    transport:\n",
+		`    transport:
+      protocol: http2
+      tls:
+        trust_bundle_ref: internal-ca
+        client_certificate_ref: orders-client
+        server_name: orders.internal
+`,
+		1,
+	)
+	return document
+}
+
+func writeV5MaterialFiles(t *testing.T) (string, string, string) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(31),
+		Subject:               pkix.Name{CommonName: "Phase 3C1 Test Root"},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              []string{"orders.internal"},
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKeyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKeyDER})
+	certificateFile := filepath.Join(directory, "client.crt")
+	privateKeyFile := filepath.Join(directory, "client.key")
+	caFile := filepath.Join(directory, "ca.pem")
+	for path, data := range map[string][]byte{
+		certificateFile: certificatePEM,
+		privateKeyFile:  privateKeyPEM,
+		caFile:          certificatePEM,
+	} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return certificateFile, privateKeyFile, caFile
 }

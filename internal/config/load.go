@@ -92,6 +92,19 @@ func Decode(r io.Reader) (BootstrapConfig, model.ResourceSet, error) {
 			return BootstrapConfig{}, model.ResourceSet{}, err
 		}
 		return bootstrap, resources, nil
+	case apiVersionV1Alpha5:
+		var wire documentV5
+		if err := decodeStrict(data, &wire); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		bootstrap, resources, err := convertV5(wire)
+		if err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		if err := validateV5(wire.APIVersion, &bootstrap, &resources); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		return bootstrap, resources, nil
 	default:
 		return BootstrapConfig{}, model.ResourceSet{}, fmt.Errorf("api_version: unsupported %q", header.APIVersion)
 	}
@@ -198,6 +211,7 @@ func convert(wire document) (BootstrapConfig, model.ResourceSet, error) {
 				Type: model.BalancerWeightedRoundRobin,
 			},
 			Transport: model.TransportConfig{
+				Protocol:                  model.TransportProtocolHTTP1,
 				DialTimeout:               dialTimeout,
 				ResponseHeaderTimeout:     responseHeaderTimeout,
 				IdleConnectionTimeout:     idleConnectionTimeout,

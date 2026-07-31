@@ -117,6 +117,7 @@ func convertTransport(index int, wire transportDocument) (model.TransportConfig,
 		return model.TransportConfig{}, err
 	}
 	return model.TransportConfig{
+		Protocol:                  model.TransportProtocolHTTP1,
 		DialTimeout:               dialTimeout,
 		ResponseHeaderTimeout:     responseHeaderTimeout,
 		IdleConnectionTimeout:     idleConnectionTimeout,
