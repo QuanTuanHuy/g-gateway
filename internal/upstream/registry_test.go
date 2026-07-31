@@ -330,6 +330,50 @@ func TestRegistryUnrelatedUpstreamChangePreservesTransportIdentity(t *testing.T)
 	}
 }
 
+func TestRegistryTwentyRotationsPreserveUnrelatedTransportPools(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	upstreamA := testUpstream("upstream-a", testEndpoint("http://a.example:8080", 1))
+	upstreamA.Transport.ResponseHeaderTimeout += time.Millisecond
+	upstreamB := testUpstream("upstream-b", testEndpoint("http://b.example:8080", 1))
+	resources := model.ResourceSet{Upstreams: []model.Upstream{upstreamA, upstreamB}}
+	candidate, err := registry.Prepare(resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := candidate.Commit()
+	defer func() {
+		active.Retire()
+	}()
+	baselineB, _ := active.Plan("upstream-b")
+	baselineProduction := baselineB.transport.production
+	baselineProbe := baselineB.transport.probe
+
+	for rotation := 1; rotation <= 20; rotation++ {
+		nextResources := model.CloneResourceSet(resources)
+		nextResources.Upstreams[0].Transport.ResponseHeaderTimeout +=
+			time.Duration(rotation) * time.Millisecond
+		nextCandidate, prepareErr := registry.Prepare(nextResources)
+		if prepareErr != nil {
+			t.Fatalf("rotation %d prepare: %v", rotation, prepareErr)
+		}
+		next := nextCandidate.Commit()
+		nextB, _ := next.Plan("upstream-b")
+		if nextB.transport.production != baselineProduction ||
+			nextB.transport.probe != baselineProbe {
+			t.Fatalf("rotation %d replaced unrelated production/probe pools", rotation)
+		}
+
+		active.Retire()
+		registry.reapNow()
+		if stats := registry.Stats(); stats.LiveTransports != 2 ||
+			stats.ActivePlanSets != 1 ||
+			stats.RetiredPlanSets != 0 {
+			t.Fatalf("rotation %d registry did not reach steady state: %+v", rotation, stats)
+		}
+		active = next
+	}
+}
+
 func TestRegistryOwnsDisabledEndpointAndReusesItWhenEnabled(t *testing.T) {
 	registry := mustRegistry(t, 64, nil)
 	resource := testUpstream("users",

@@ -18,11 +18,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/config"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
+	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
+	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/interop/grpc_testing"
 )
 
 func TestStartBindsAdminBeforeTrafficAndBecomesReady(t *testing.T) {
@@ -379,6 +385,9 @@ func TestShutdownFlipsReadinessBeforeDrain(t *testing.T) {
 	if err := <-shutdownDone; err != nil {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
+	if stats := fixture.gateway.manager.UpstreamStats(); stats != (upstream.RegistryStats{}) {
+		t.Fatalf("registry stats after shutdown=%+v, want zero", stats)
+	}
 }
 
 func TestShutdownDrainsInFlightRequest(t *testing.T) {
@@ -447,6 +456,241 @@ func TestShutdownDeadlineCancelsRemainingRequests(t *testing.T) {
 		t.Fatal("Shutdown() error = nil, want deadline error")
 	}
 	waitSignal(t, canceled, "upstream request cancellation")
+}
+
+func TestGRPCStreamSurvivesTLSMaterialRotation(t *testing.T) {
+	certificateFile, privateKeyFile := writeCertificatePair(t)
+	certificatePEM, err := os.ReadFile(certificateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := tls.LoadX509KeyPair(certificateFile, privateKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := &countingGRPCListener{Listener: baseListener}
+	grpcServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{certificate},
+	})))
+	grpc_testing.RegisterTestServiceServer(grpcServer, rotationGRPCService{})
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	firstBundle, err := tlsmaterial.NewTrustBundle("grpc-roots", certificatePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := grpcRotationResources(
+		"https://"+listener.Addr().String(),
+		firstBundle,
+	)
+	gatewayRuntime, err := New(
+		testBootstrap(certificateFile, privateKeyFile),
+		resources,
+		testLogger(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses, err := gatewayRuntime.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := gatewayRuntime.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error=%v", err)
+		}
+	})
+	connection, err := grpc.NewClient(
+		loopbackAddress(t, addresses.HTTPS),
+		grpc.WithTransportCredentials(credentials.NewTLS(insecureTLSConfig())),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = connection.Close()
+	})
+	client := grpc_testing.NewTestServiceClient(connection)
+	firstStream, err := client.FullDuplexCall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRotationGRPCEcho(t, firstStream, "before-rotation")
+
+	unrelatedCertificateFile, _ := writeCertificatePair(t)
+	unrelatedPEM, err := os.ReadFile(unrelatedCertificateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedBundle, err := tlsmaterial.NewTrustBundle(
+		"grpc-roots",
+		append(append([]byte(nil), certificatePEM...), unrelatedPEM...),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated := model.CloneResourceSet(resources)
+	rotated.TrustBundles[0] = rotatedBundle
+	if err := gatewayRuntime.Apply(2, rotated); err != nil {
+		t.Fatal(err)
+	}
+	if stats := gatewayRuntime.manager.UpstreamStats(); stats.RetiredPlanSets != 1 {
+		t.Fatalf("retired plan sets with live gRPC stream=%d, want 1", stats.RetiredPlanSets)
+	}
+	assertRotationGRPCEcho(t, firstStream, "after-rotation")
+
+	secondStream, err := client.FullDuplexCall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRotationGRPCEcho(t, secondStream, "new-generation")
+	closeRotationGRPCStream(t, secondStream)
+	if got := listener.accepted.Load(); got < 2 {
+		t.Fatalf("upstream gRPC connections=%d, want a new material generation", got)
+	}
+
+	closeRotationGRPCStream(t, firstStream)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if gatewayRuntime.manager.UpstreamStats().RetiredPlanSets == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf(
+		"retired plan sets after gRPC stream release=%d, want 0",
+		gatewayRuntime.manager.UpstreamStats().RetiredPlanSets,
+	)
+}
+
+type rotationGRPCService struct {
+	grpc_testing.UnimplementedTestServiceServer
+}
+
+func (rotationGRPCService) FullDuplexCall(
+	stream grpc.BidiStreamingServer[
+		grpc_testing.StreamingOutputCallRequest,
+		grpc_testing.StreamingOutputCallResponse,
+	],
+) error {
+	for {
+		request, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := stream.Send(&grpc_testing.StreamingOutputCallResponse{
+			Payload: &grpc_testing.Payload{
+				Body: append([]byte(nil), request.GetPayload().GetBody()...),
+			},
+		}); err != nil {
+			return err
+		}
+	}
+}
+
+type countingGRPCListener struct {
+	net.Listener
+	accepted atomic.Int32
+}
+
+func (l *countingGRPCListener) Accept() (net.Conn, error) {
+	connection, err := l.Listener.Accept()
+	if err == nil {
+		l.accepted.Add(1)
+	}
+	return connection, err
+}
+
+func grpcRotationResources(
+	endpoint string,
+	bundle *tlsmaterial.TrustBundle,
+) model.ResourceSet {
+	noTotalTimeout := time.Duration(0)
+	return model.ResourceSet{
+		Routes: []model.Route{{
+			ID: "grpc",
+			Match: model.RouteMatch{
+				Path:    "/grpc.testing.TestService/*",
+				Methods: []string{http.MethodPost},
+			},
+			UpstreamRef: "grpc",
+			Resilience: model.RouteResiliencePolicy{
+				TotalTimeout: &noTotalTimeout,
+			},
+		}},
+		Upstreams: []model.Upstream{{
+			ID:        "grpc",
+			Endpoints: []model.Endpoint{{URL: endpoint, Weight: 1}},
+			Balancer:  model.BalancerPolicy{Type: model.BalancerWeightedRoundRobin},
+			Transport: model.TransportConfig{
+				Protocol: model.TransportProtocolHTTP2,
+				TLS: &model.UpstreamTLSPolicy{
+					TrustBundleRef: "grpc-roots",
+				},
+				DialTimeout:               time.Second,
+				ResponseHeaderTimeout:     time.Second,
+				IdleConnectionTimeout:     time.Minute,
+				MaxIdleConnections:        8,
+				MaxIdleConnectionsPerHost: 8,
+			},
+		}},
+		TrustBundles: []*tlsmaterial.TrustBundle{bundle},
+	}
+}
+
+func assertRotationGRPCEcho(
+	t *testing.T,
+	stream grpc.BidiStreamingClient[
+		grpc_testing.StreamingOutputCallRequest,
+		grpc_testing.StreamingOutputCallResponse,
+	],
+	message string,
+) {
+	t.Helper()
+	if err := stream.Send(&grpc_testing.StreamingOutputCallRequest{
+		Payload: &grpc_testing.Payload{Body: []byte(message)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(response.GetPayload().GetBody()); got != message {
+		t.Fatalf("gRPC echo=%q, want %q", got, message)
+	}
+}
+
+func closeRotationGRPCStream(
+	t *testing.T,
+	stream grpc.BidiStreamingClient[
+		grpc_testing.StreamingOutputCallRequest,
+		grpc_testing.StreamingOutputCallResponse,
+	],
+) {
+	t.Helper()
+	if err := stream.CloseSend(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("gRPC stream terminal error=%v, want EOF", err)
+	}
 }
 
 func TestPanicBeforeCommitReturnsStable500(t *testing.T) {
