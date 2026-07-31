@@ -426,7 +426,7 @@ type upstreamTestPKI struct {
 	serial     atomic.Int64
 }
 
-func newUpstreamTestPKI(t *testing.T, commonName string) *upstreamTestPKI {
+func newUpstreamTestPKI(t testing.TB, commonName string) *upstreamTestPKI {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -458,7 +458,7 @@ func newUpstreamTestPKI(t *testing.T, commonName string) *upstreamTestPKI {
 }
 
 func (p *upstreamTestPKI) issue(
-	t *testing.T,
+	t testing.TB,
 	request certificateRequest,
 ) ([]byte, []byte) {
 	t.Helper()
@@ -519,7 +519,7 @@ type upstreamTLSServerOptions struct {
 }
 
 func startUpstreamTLSServer(
-	t *testing.T,
+	t testing.TB,
 	options upstreamTLSServerOptions,
 	handler http.Handler,
 ) string {
@@ -597,7 +597,7 @@ func integrationTLSUpstream(
 	}
 }
 
-func mustTrustBundle(t *testing.T, id string, certificatePEM []byte) *tlsmaterial.TrustBundle {
+func mustTrustBundle(t testing.TB, id string, certificatePEM []byte) *tlsmaterial.TrustBundle {
 	t.Helper()
 	bundle, err := tlsmaterial.NewTrustBundle(id, certificatePEM)
 	if err != nil {
@@ -607,7 +607,7 @@ func mustTrustBundle(t *testing.T, id string, certificatePEM []byte) *tlsmateria
 }
 
 func mustClientCertificate(
-	t *testing.T,
+	t testing.TB,
 	id string,
 	certificatePEM, privateKeyPEM []byte,
 ) *tlsmaterial.Certificate {

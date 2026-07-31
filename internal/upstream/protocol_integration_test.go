@@ -129,12 +129,12 @@ func TestHTTP2AndH2CStreamChunksTrailersAndCancellation(t *testing.T) {
 	trust := mustTrustBundle(t, "stream-root", pki.rootPEM)
 	tests := []struct {
 		name    string
-		start   func(*testing.T, http.Handler) string
+		start   func(testing.TB, http.Handler) string
 		profile func(string) transportProfile
 	}{
 		{
 			name: "https HTTP2",
-			start: func(t *testing.T, handler http.Handler) string {
+			start: func(t testing.TB, handler http.Handler) string {
 				return startUpstreamTLSServer(t, upstreamTLSServerOptions{
 					certificatePEM: serverCertificatePEM,
 					privateKeyPEM:  serverKeyPEM,
@@ -229,7 +229,7 @@ func TestHTTP2AndH2CStreamChunksTrailersAndCancellation(t *testing.T) {
 	}
 }
 
-func startH2CServer(t *testing.T, handler http.Handler) string {
+func startH2CServer(t testing.TB, handler http.Handler) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
