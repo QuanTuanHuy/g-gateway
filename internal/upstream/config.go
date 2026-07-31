@@ -118,6 +118,7 @@ func Normalize(resources []model.Upstream) ([]model.Upstream, error) {
 
 		endpoints := make([]endpointConfig, len(resource.Endpoints))
 		activeEndpoints := 0
+		activeScheme := ""
 		seenEndpointIDs := make(map[string]struct{}, len(resource.Endpoints))
 		for endpointIndex, endpoint := range resource.Endpoints {
 			field := fmt.Sprintf("%s.endpoints[%d]", upstreamField, endpointIndex)
@@ -130,6 +131,17 @@ func Normalize(resources []model.Upstream) ([]model.Upstream, error) {
 			canonicalURL, err := normalizeEndpoint(endpoint.URL)
 			if err != nil {
 				return nil, configError("UPSTREAM_ENDPOINT_INVALID", field+".url", resource.ID, err)
+			}
+			if endpoint.Weight > 0 {
+				parsed, parseErr := url.Parse(canonicalURL)
+				if parseErr != nil {
+					return nil, configError("UPSTREAM_ENDPOINT_INVALID", field+".url", resource.ID, parseErr)
+				}
+				if activeScheme == "" {
+					activeScheme = parsed.Scheme
+				} else if activeScheme != parsed.Scheme {
+					return nil, configError("UPSTREAM_SCHEME_MIXED", upstreamField+".endpoints", resource.ID, fmt.Errorf("positive-weight endpoints must use one scheme"))
+				}
 			}
 			identity := endpointIdentity(resource.ID, canonicalURL)
 			if _, duplicate := seenEndpointIDs[identity]; duplicate {
@@ -157,7 +169,7 @@ func Normalize(resources []model.Upstream) ([]model.Upstream, error) {
 		if err := normalizeBalancer(&resource, upstreamField); err != nil {
 			return nil, err
 		}
-		if err := validateTransport(resource, upstreamField); err != nil {
+		if err := validateTransport(&resource, activeScheme, upstreamField); err != nil {
 			return nil, err
 		}
 		if err := normalizeHealth(&resource, upstreamField+".health"); err != nil {
@@ -334,8 +346,8 @@ func normalizeEndpoint(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if parsed.Scheme != "http" {
-		return "", fmt.Errorf("scheme http is required")
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("scheme http or https is required")
 	}
 	if parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("URL may contain only scheme and host")
@@ -360,6 +372,9 @@ func normalizeEndpoint(raw string) (string, error) {
 	port := parsed.Port()
 	if port == "" {
 		port = "80"
+		if parsed.Scheme == "https" {
+			port = "443"
+		}
 	}
 	portNumber, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || portNumber == 0 {
@@ -370,7 +385,7 @@ func normalizeEndpoint(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "http://" + net.JoinHostPort(normalizedHost, strconv.FormatUint(portNumber, 10)), nil
+	return parsed.Scheme + "://" + net.JoinHostPort(normalizedHost, strconv.FormatUint(portNumber, 10)), nil
 }
 
 func normalizeHost(host string) (string, error) {
@@ -473,7 +488,7 @@ func validToken(value string) bool {
 	return true
 }
 
-func validateTransport(resource model.Upstream, upstreamField string) error {
+func validateTransport(resource *model.Upstream, scheme, upstreamField string) error {
 	checks := []struct {
 		field string
 		valid bool
@@ -488,6 +503,59 @@ func validateTransport(resource model.Upstream, upstreamField string) error {
 		if !check.valid {
 			return configError("TRANSPORT_PROFILE_INVALID", upstreamField+".transport."+check.field, resource.ID, fmt.Errorf("must be greater than zero"))
 		}
+	}
+	if resource.Transport.Protocol == "" {
+		resource.Transport.Protocol = model.TransportProtocolHTTP1
+	}
+	switch resource.Transport.Protocol {
+	case model.TransportProtocolAuto, model.TransportProtocolHTTP1, model.TransportProtocolHTTP2:
+	default:
+		return configError(
+			"TRANSPORT_PROTOCOL_INVALID",
+			upstreamField+".transport.protocol",
+			resource.ID,
+			fmt.Errorf("unsupported protocol %q", resource.Transport.Protocol),
+		)
+	}
+	if scheme == "http" && resource.Transport.TLS != nil {
+		return configError(
+			"TRANSPORT_TLS_INVALID",
+			upstreamField+".transport.tls",
+			resource.ID,
+			fmt.Errorf("TLS policy requires HTTPS endpoints"),
+		)
+	}
+	if resource.Transport.TLS == nil {
+		return nil
+	}
+	policy := resource.Transport.TLS
+	for _, reference := range []struct {
+		field string
+		value string
+	}{
+		{field: "trust_bundle_ref", value: policy.TrustBundleRef},
+		{field: "client_certificate_ref", value: policy.ClientCertificateRef},
+	} {
+		if reference.value != "" && strings.TrimSpace(reference.value) != reference.value {
+			return configError(
+				"TRANSPORT_TLS_INVALID",
+				upstreamField+".transport.tls."+reference.field,
+				resource.ID,
+				fmt.Errorf("reference must not contain surrounding whitespace"),
+			)
+		}
+	}
+	if policy.ServerName != "" {
+		normalized, err := normalizeHost(policy.ServerName)
+		if err != nil {
+			return configError(
+				"TRANSPORT_TLS_INVALID",
+				upstreamField+".transport.tls.server_name",
+				resource.ID,
+				err,
+			)
+		}
+		policy.ServerName = normalized
 	}
 	return nil
 }

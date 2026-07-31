@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +28,9 @@ func validateV1(version string, bootstrap *BootstrapConfig, resources *model.Res
 		return err
 	}
 	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if err := validateLegacyUpstreamSchemes(resources.Upstreams); err != nil {
 		return err
 	}
 	if len(resources.Routes) != 1 {
@@ -67,6 +71,9 @@ func validateV2(version string, bootstrap *BootstrapConfig, resources *model.Res
 	if err := validateResourceIDs(*resources); err != nil {
 		return err
 	}
+	if err := validateLegacyUpstreamSchemes(resources.Upstreams); err != nil {
+		return err
+	}
 	if len(resources.Routes) == 0 {
 		return fmt.Errorf("routes: must contain at least one route")
 	}
@@ -102,6 +109,9 @@ func validateV3(version string, bootstrap *BootstrapConfig, resources *model.Res
 		return fmt.Errorf("runtime.max_retired_snapshots: must be between 1 and 1024")
 	}
 	if err := validateResourceIDs(*resources); err != nil {
+		return err
+	}
+	if err := validateLegacyUpstreamSchemes(resources.Upstreams); err != nil {
 		return err
 	}
 	if len(resources.Routes) == 0 {
@@ -196,6 +206,22 @@ func validateReadableRegularFile(field, path string) error {
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s: %q is not a regular file", field, path)
+	}
+	return nil
+}
+
+func validateLegacyUpstreamSchemes(upstreams []model.Upstream) error {
+	for upstreamIndex, upstream := range upstreams {
+		for endpointIndex, endpoint := range upstream.Endpoints {
+			parsed, err := url.Parse(endpoint.URL)
+			if err != nil || parsed.Scheme != "http" {
+				return fmt.Errorf(
+					"upstreams[%d].endpoints[%d].url: scheme http is required",
+					upstreamIndex,
+					endpointIndex,
+				)
+			}
+		}
 	}
 	return nil
 }

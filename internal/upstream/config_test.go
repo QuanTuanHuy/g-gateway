@@ -87,7 +87,7 @@ func TestNormalizeRejectsInvalidResources(t *testing.T) {
 		{
 			name: "invalid scheme",
 			upstreams: []model.Upstream{validUpstreamWith(model.Endpoint{
-				URL: "https://example.com", Weight: 1,
+				URL: "ftp://example.com", Weight: 1,
 			})},
 			code:  "UPSTREAM_ENDPOINT_INVALID",
 			field: "upstreams[0].endpoints[0].url",
