@@ -206,10 +206,14 @@ func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 }
 
 func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRefs, stats *PrepareStats) (*Plan, error) {
-	transportKey := makeTransportKey(resource.Transport)
+	profile, err := compileTransportProfile(resource, materialIndex{})
+	if err != nil {
+		return nil, err
+	}
+	transportKey := makeTransportKey(profile)
 	transport := r.transports[transportKey]
 	if transport == nil {
-		transport = &transportEntry{runtime: newTransportRuntime(resource.Transport)}
+		transport = &transportEntry{runtime: newTransportRuntime(profile)}
 		r.transports[transportKey] = transport
 		stats.CreatedTransports++
 	} else {

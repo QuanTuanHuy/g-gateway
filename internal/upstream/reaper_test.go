@@ -139,7 +139,8 @@ func committedTestPlanSet(t testing.TB, registry *Registry) *PlanSet {
 	})
 	plan, _ := candidate.Plan("users")
 	if stored, ok := registryTestCloseIdle.Load(registry); ok {
-		plan.transport.closeIdleConnections = stored.(func())
+		plan.transport.closeProductionIdle = stored.(func())
+		plan.transport.closeProbeIdle = func() {}
 		registryTestCloseIdle.Delete(registry)
 	}
 	set := candidate.Commit()
