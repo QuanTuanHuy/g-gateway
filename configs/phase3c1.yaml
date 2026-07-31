@@ -1,0 +1,150 @@
+api_version: gateway/v1alpha5
+
+runtime:
+  max_retired_snapshots: 64
+  health:
+    workers: 16
+    ready_queue_capacity: 4096
+
+listeners:
+  http:
+    address: ":8080"
+  https:
+    address: ":8443"
+    certificate_file: /certs/server.crt
+    private_key_file: /certs/server.key
+  admin:
+    address: ":9090"
+
+server:
+  read_header_timeout: 5s
+  idle_timeout: 60s
+  shutdown_timeout: 30s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 67108864
+
+telemetry:
+  request_metrics_enabled: true
+  profiling_enabled: false
+
+trust_bundles:
+  - id: internal-ca
+    ca_file: /secrets/internal-ca.pem
+
+certificates:
+  - id: orders-client
+    certificate_file: /secrets/orders-client.crt
+    private_key_file: /secrets/orders-client.key
+
+routes:
+  - id: orders-mtls
+    priority: 100
+    match:
+      path: /orders/{id}
+      methods: [GET, POST]
+    upstream_ref: orders-mtls
+  - id: public-auto
+    priority: 90
+    match:
+      path: /public/*path
+      methods: [GET]
+    upstream_ref: public-auto
+  - id: grpc-stream
+    priority: 80
+    match:
+      path: /grpc.testing.TestService/*method
+      methods: [POST]
+    upstream_ref: grpc-h2c
+    resilience:
+      total_timeout: 0
+      max_attempts: 1
+  - id: tcp-checked
+    priority: 70
+    match:
+      path: /tcp
+      methods: [GET]
+    upstream_ref: tcp-checked
+
+services: []
+
+upstreams:
+  - id: orders-mtls
+    endpoints:
+      - url: https://10.0.1.10:8443
+        weight: 1
+      - url: https://10.0.1.11:8443
+        weight: 1
+    balancer:
+      type: weighted_round_robin
+    health:
+      active:
+        type: http
+        path: /healthz
+        host: orders.internal
+      passive: {}
+    retry:
+      max_attempts: 2
+      methods: [GET]
+      total_timeout: 10s
+    transport:
+      protocol: http2
+      tls:
+        trust_bundle_ref: internal-ca
+        client_certificate_ref: orders-client
+        server_name: orders.internal
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 1024
+      max_idle_connections_per_host: 256
+  - id: public-auto
+    endpoints:
+      - url: https://api.example.com
+        weight: 1
+    balancer:
+      type: weighted_round_robin
+    health: {}
+    retry:
+      max_attempts: 1
+    transport:
+      protocol: auto
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 256
+      max_idle_connections_per_host: 64
+  - id: grpc-h2c
+    endpoints:
+      - url: http://grpc.internal:50051
+        weight: 1
+    balancer:
+      type: weighted_round_robin
+    health: {}
+    retry:
+      max_attempts: 1
+      total_timeout: 0
+    transport:
+      protocol: http2
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 256
+      max_idle_connections_per_host: 64
+  - id: tcp-checked
+    endpoints:
+      - url: http://upstream-c:8080
+        weight: 1
+    balancer:
+      type: weighted_round_robin
+    health:
+      active:
+        type: tcp
+    retry:
+      max_attempts: 1
+    transport:
+      protocol: http1
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 256
+      max_idle_connections_per_host: 64

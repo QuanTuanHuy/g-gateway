@@ -46,6 +46,43 @@ func TestDecodeValidV1Alpha5TLSResourcesAndTransport(t *testing.T) {
 	}
 }
 
+func TestPhase3C1ExampleConfigurationLoads(t *testing.T) {
+	document, err := os.ReadFile(filepath.Join("..", "..", "configs", "phase3c1.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateFile, privateKeyFile, caFile := writeV5MaterialFiles(t)
+	replacements := map[string]string{
+		"/certs/server.crt":          filepath.ToSlash(certificateFile),
+		"/certs/server.key":          filepath.ToSlash(privateKeyFile),
+		"/secrets/internal-ca.pem":   filepath.ToSlash(caFile),
+		"/secrets/orders-client.crt": filepath.ToSlash(certificateFile),
+		"/secrets/orders-client.key": filepath.ToSlash(privateKeyFile),
+	}
+	rendered := string(document)
+	for mounted, local := range replacements {
+		rendered = strings.ReplaceAll(rendered, mounted, local)
+	}
+	bootstrap, resources, err := Decode(strings.NewReader(rendered))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.HTTP.Address != ":8080" ||
+		len(resources.Routes) != 4 ||
+		len(resources.Upstreams) != 4 ||
+		len(resources.Certificates) != 1 ||
+		len(resources.TrustBundles) != 1 {
+		t.Fatalf(
+			"example shape listeners=%+v routes=%d upstreams=%d certificates=%d bundles=%d",
+			bootstrap.HTTP,
+			len(resources.Routes),
+			len(resources.Upstreams),
+			len(resources.Certificates),
+			len(resources.TrustBundles),
+		)
+	}
+}
+
 func TestDecodeV1Alpha5DefaultsProtocolToAuto(t *testing.T) {
 	document := strings.Replace(validV5Document(t), "      protocol: http2\n", "", 1)
 	_, resources, err := Decode(strings.NewReader(document))

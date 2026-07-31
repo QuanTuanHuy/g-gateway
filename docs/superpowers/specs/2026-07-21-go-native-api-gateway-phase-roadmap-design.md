@@ -158,12 +158,14 @@ Phase 2 đang ở trạng thái `implementation complete; canonical evidence pen
 
 ## 7. Phase 3 — Upstream resilience
 
-Phase 3 được chia thành bốn sub-phase có design và acceptance độc lập:
+Phase 3 được chia thành sáu sub-phase có design và acceptance độc lập:
 
 1. [Phase 3A — Upstream runtime and balancing kernel](2026-07-26-phase-3a-upstream-runtime-balancing-kernel-design.md);
-2. Phase 3B — active/passive health, timeout policy, replay-safe retry và retry budget;
-3. Phase 3C — upstream TLS/mTLS, protocol expansion, dynamic downstream SNI và WebSocket;
-4. Phase 3D — bounded access logging, integrated resilience acceptance và APISIX comparison.
+2. [Phase 3B — active/passive health, timeout policy, replay-safe retry và retry budget](2026-07-27-phase-3b-health-timeout-retry-design.md);
+3. [Phase 3C1 — upstream TLS/mTLS, HTTP/2/h2c và native gRPC pass-through](2026-07-30-phase-3c1-upstream-tls-protocol-design.md);
+4. Phase 3C2 — generic immutable `Certificate` resources và downstream exact/wildcard SNI;
+5. Phase 3C3 — HTTP listener/runtime foundations cho WebSocket lifecycle;
+6. Phase 3D — bounded access logging, integrated resilience acceptance và APISIX comparison.
 
 ### 7.1. Mục tiêu
 
@@ -199,15 +201,17 @@ Tạo standalone data plane đủ tin cậy để proxy traffic thật trước 
 - Upstream failure/recovery integration tests đạt.
 - Load balancing, TLS, health và retry benchmark scenarios không vi phạm comparative gate liên quan.
 
-### 7.5. Trạng thái và handoff ngày 2026-07-26
+### 7.5. Trạng thái và handoff ngày 2026-07-31
 
 Phase 3A ở trạng thái `implementation complete; canonical resource evidence pending`. Strict v1alpha3, immutable upstream plans, canonical endpoint identity, shared transport profiles, transactional reconcile, WRR, consistent hash, request lease, retirement/reaper và bounded telemetry đã được triển khai. Normal acceptance và zero-allocation selector/lease evidence đã đạt trên development environment; full-envelope, race trên CGO-capable environment, reference-Linux absolute gates và APISIX E2E còn pending.
 
 [Phase 3A current status](../../benchmarks/phase-3a-current-status.md) ghi rõ evidence đã quan sát và các gate chưa chạy. Trạng thái này cho phép brainstorm Phase 3B nhưng chưa đánh dấu toàn bộ Phase 3 hoàn tất hoặc accepted.
 
-Phase 3B nhận immutable plans, endpoint identity, shared transports, request leases và registry lifecycle. Phase 3B không được đưa mutable health vào snapshot hoặc rebuild snapshot khi health transition.
+Phase 3B đã bổ sung bounded active/passive health, deadline, replay-safe retry và retry budget. [Phase 3B current status](../../benchmarks/phase-3b-current-status.md) giữ canonical Linux/race evidence ở trạng thái pending.
 
-Phase 3C sở hữu upstream TLS/protocol expansion, dynamic downstream SNI certificate và WebSocket. Phase 3D sở hữu bounded access logging và canonical integrated APISIX comparison.
+Phase 3C1 ở trạng thái `implementation complete; canonical protocol evidence pending`. Strict v1alpha5, immutable TLS material, verified upstream TLS/mTLS, HTTP/2 over TLS, h2c, native gRPC pass-through, separate production/probe pools, atomic transport-generation rotation và bounded TLS telemetry đã được triển khai. Normal/full local acceptance, lifecycle repetition, fuzz và developer-machine protocol benchmarks đã đạt; race trên CGO-capable host, reference-Linux protocol evidence và APISIX comparison còn pending. [Phase 3C1 current status](../../benchmarks/phase-3c1-current-status.md) ghi evidence chi tiết.
+
+Phase 3C2 nhận generic immutable `Certificate` resources từ Phase 3C1 và sở hữu downstream exact/wildcard SNI binding/rotation. Phase 3C3 nhận HTTP listener/runtime foundations và sở hữu WebSocket upgrade, long-lived tunnel lifecycle, timeout và drain. Phase 3D tiếp tục sở hữu bounded access logging và canonical integrated APISIX comparison.
 
 Mọi sub-phase phải giữ router precedence và không được làm mất [deferred Phase 2 Task 16](../../benchmarks/phase-2-current-status.md#deferred-task-16).
 
@@ -386,8 +390,8 @@ Thay đổi chỉ ảnh hưởng implementation nội bộ của phase hiện t�
 
 ## 14. Bước tiếp theo
 
-Phase 3B health, timeout, retry và retry-budget implementation đã được triển khai theo design/plan riêng; developer-machine evidence được ghi tại [Phase 3B current status](../../benchmarks/phase-3b-current-status.md). Canonical Linux/race/full-profile gates vẫn pending nên toàn bộ Phase 3 chưa được đánh dấu accepted.
+Phase 3C1 upstream TLS/mTLS, HTTP/2/h2c và native gRPC pass-through đã được triển khai theo [design riêng](2026-07-30-phase-3c1-upstream-tls-protocol-design.md); developer-machine evidence được ghi tại [Phase 3C1 current status](../../benchmarks/phase-3c1-current-status.md). Canonical Linux/race/protocol gates vẫn pending nên toàn bộ Phase 3 chưa được đánh dấu accepted.
 
-Phase 3C nhận shared transports, health-aware plans, retry/deadline behavior và lifecycle sạch. Phase 3C sở hữu upstream TLS/mTLS, protocol negotiation, dynamic downstream SNI và WebSocket. Phase 3D tiếp tục sở hữu access logging và integrated APISIX comparison.
+Phase 3C2 tiếp theo nhận generic immutable `Certificate` resources và xây downstream exact/wildcard SNI selection/rotation. Phase 3C3 sau đó xây HTTP listener/runtime foundations cho WebSocket lifecycle. Phase 3D tiếp tục sở hữu access logging và integrated APISIX comparison.
 
-Không coi Phase 3B developer-machine evidence là APISIX parity hoặc production certification.
+Không coi Phase 3C1 developer-machine evidence là APISIX parity hoặc production certification.
