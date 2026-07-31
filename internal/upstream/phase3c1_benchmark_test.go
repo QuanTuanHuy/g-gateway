@@ -1,20 +1,14 @@
 package upstream
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
-	"io"
-	"net"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/interop/grpc_testing"
 )
 
 func BenchmarkTransportProfile(b *testing.B) {
@@ -108,66 +102,6 @@ func BenchmarkHTTPProtocol(b *testing.B) {
 	}
 }
 
-func BenchmarkGRPC(b *testing.B) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		b.Fatal(err)
-	}
-	server := grpc.NewServer()
-	grpc_testing.RegisterTestServiceServer(server, phase3C1BenchmarkGRPCService{})
-	go func() {
-		_ = server.Serve(listener)
-	}()
-	b.Cleanup(func() {
-		server.Stop()
-		_ = listener.Close()
-	})
-	connection, err := grpc.NewClient(
-		listener.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { _ = connection.Close() })
-	client := grpc_testing.NewTestServiceClient(connection)
-	unaryRequest := &grpc_testing.SimpleRequest{
-		Payload: &grpc_testing.Payload{Body: bytes.Repeat([]byte("x"), 256)},
-	}
-	if _, err := client.UnaryCall(context.Background(), unaryRequest); err != nil {
-		b.Fatal(err)
-	}
-
-	b.Run("unary", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			if _, err := client.UnaryCall(context.Background(), unaryRequest); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("server-streaming", func(b *testing.B) {
-		request := &grpc_testing.StreamingOutputCallRequest{
-			ResponseParameters: []*grpc_testing.ResponseParameters{{Size: 128}, {Size: 128}},
-		}
-		b.ReportAllocs()
-		for b.Loop() {
-			stream, streamErr := client.StreamingOutputCall(context.Background(), request)
-			if streamErr != nil {
-				b.Fatal(streamErr)
-			}
-			for {
-				if _, recvErr := stream.Recv(); recvErr != nil {
-					if recvErr != io.EOF {
-						b.Fatal(recvErr)
-					}
-					break
-				}
-			}
-		}
-	})
-}
-
 func BenchmarkTransportGeneration(b *testing.B) {
 	pkiA := newUpstreamTestPKI(b, "generation-a")
 	pkiB := newUpstreamTestPKI(b, "generation-b")
@@ -239,33 +173,6 @@ func BenchmarkTransportGeneration(b *testing.B) {
 			}
 		})
 	}
-}
-
-type phase3C1BenchmarkGRPCService struct {
-	grpc_testing.UnimplementedTestServiceServer
-}
-
-func (phase3C1BenchmarkGRPCService) UnaryCall(
-	_ context.Context,
-	request *grpc_testing.SimpleRequest,
-) (*grpc_testing.SimpleResponse, error) {
-	return &grpc_testing.SimpleResponse{
-		Payload: &grpc_testing.Payload{Body: request.GetPayload().GetBody()},
-	}, nil
-}
-
-func (phase3C1BenchmarkGRPCService) StreamingOutputCall(
-	request *grpc_testing.StreamingOutputCallRequest,
-	stream grpc.ServerStreamingServer[grpc_testing.StreamingOutputCallResponse],
-) error {
-	for _, parameter := range request.GetResponseParameters() {
-		if err := stream.Send(&grpc_testing.StreamingOutputCallResponse{
-			Payload: &grpc_testing.Payload{Body: make([]byte, parameter.GetSize())},
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func phase3C1BenchmarkTLSServer(

@@ -189,6 +189,48 @@ func TestGRPCCancellationPassThrough(t *testing.T) {
 	}
 }
 
+func BenchmarkGRPC(b *testing.B) {
+	identity := newGRPCTestIdentity(b)
+	service := newGRPCInteropService()
+	upstreamAddress := startGRPCTestServer(b, identity, service, true)
+	client := startGRPCTestGateway(b, identity, "https://"+upstreamAddress)
+	unaryRequest := &grpc_testing.SimpleRequest{
+		Payload: &grpc_testing.Payload{Body: bytes.Repeat([]byte("x"), 256)},
+	}
+	if _, err := client.UnaryCall(context.Background(), unaryRequest); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("unary", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := client.UnaryCall(context.Background(), unaryRequest); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("server-streaming", func(b *testing.B) {
+		request := &grpc_testing.StreamingOutputCallRequest{
+			ResponseParameters: []*grpc_testing.ResponseParameters{{Size: 128}, {Size: 128}},
+		}
+		b.ReportAllocs()
+		for b.Loop() {
+			stream, streamErr := client.StreamingOutputCall(context.Background(), request)
+			if streamErr != nil {
+				b.Fatal(streamErr)
+			}
+			for {
+				if _, recvErr := stream.Recv(); recvErr != nil {
+					if recvErr != io.EOF {
+						b.Fatal(recvErr)
+					}
+					break
+				}
+			}
+		}
+	})
+}
+
 func assertGRPCBidiEcho(
 	t *testing.T,
 	client grpc_testing.TestServiceClient,
@@ -326,7 +368,7 @@ type grpcTestIdentity struct {
 	privateKeyPEM  []byte
 }
 
-func newGRPCTestIdentity(t *testing.T) grpcTestIdentity {
+func newGRPCTestIdentity(t testing.TB) grpcTestIdentity {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -378,7 +420,7 @@ func newGRPCTestIdentity(t *testing.T) grpcTestIdentity {
 }
 
 func startGRPCTestServer(
-	t *testing.T,
+	t testing.TB,
 	identity grpcTestIdentity,
 	service *grpcInteropService,
 	useTLS bool,
@@ -408,7 +450,7 @@ func startGRPCTestServer(
 }
 
 func startGRPCTestGateway(
-	t *testing.T,
+	t testing.TB,
 	identity grpcTestIdentity,
 	upstreamURL string,
 ) grpc_testing.TestServiceClient {
@@ -516,7 +558,7 @@ func startGRPCTestGateway(
 	return grpc_testing.NewTestServiceClient(connection)
 }
 
-func loopbackGRPCAddress(t *testing.T, address string) string {
+func loopbackGRPCAddress(t testing.TB, address string) string {
 	t.Helper()
 	_, port, err := net.SplitHostPort(address)
 	if err != nil {
