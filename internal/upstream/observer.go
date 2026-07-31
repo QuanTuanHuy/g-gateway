@@ -1,5 +1,20 @@
 package upstream
 
+import "github.com/QuanTuanHuy/g-gateway/internal/model"
+
+// TransportGenerationDelta reports one compacted transport-generation
+// lifecycle count using only closed action, TLS, and protocol dimensions.
+type TransportGenerationDelta struct {
+	// Action is create, reuse, or retire.
+	Action string
+	// TLS reports whether the transport uses upstream TLS.
+	TLS bool
+	// Protocol is the configured auto, HTTP/1, or HTTP/2 policy.
+	Protocol model.TransportProtocol
+	// Count is the positive number of matching generation events.
+	Count int
+}
+
 // PrepareStats reports resource deltas for one candidate preparation plus the
 // current registry gauges after preparation.
 type PrepareStats struct {
@@ -27,6 +42,8 @@ type PrepareStats struct {
 	CreatedRetryBudgets int
 	// ReusedRetryBudgets is the number of retry budgets reused.
 	ReusedRetryBudgets int
+	// TransportGenerations contains compacted create and reuse deltas.
+	TransportGenerations []TransportGenerationDelta
 	// Current contains registry gauges after the preparation transaction.
 	Current RegistryStats
 }
@@ -46,6 +63,8 @@ type CleanupStats struct {
 	ReleasedHealthTrackers int
 	// ReleasedRetryBudgets is the number of retry-budget references released.
 	ReleasedRetryBudgets int
+	// TransportGenerations contains compacted retire deltas.
+	TransportGenerations []TransportGenerationDelta
 	// Current contains registry gauges after cleanup.
 	Current RegistryStats
 }
@@ -64,6 +83,10 @@ type Observer interface {
 	RegistryCleaned(CleanupStats)
 	// RegistryError reports a stable bounded error code and its cause.
 	RegistryError(code string, err error)
+	// TLSHandshake reports one terminal TLS handshake result.
+	TLSHandshake(result, mode string, protocol model.TransportProtocol)
+	// TLSFailure reports one stable typed upstream TLS failure class.
+	TLSFailure(class TLSFailureClass)
 }
 
 // RegistryStats contains current resource and plan-set gauges.

@@ -185,6 +185,7 @@ func (r *Registry) Prepare(resources model.ResourceSet) (*Candidate, error) {
 			stats.Current = cleanup.Current
 			r.mu.Unlock()
 			closeTransports(transports)
+			r.notifyCleaned(cleanup)
 			r.notifyRolledBack(stats)
 			r.notifyError(configErrorCode(compileErr), compileErr)
 			return nil, compileErr
@@ -200,6 +201,7 @@ func (r *Registry) Prepare(resources model.ResourceSet) (*Candidate, error) {
 			stats.Current = cleanup.Current
 			r.mu.Unlock()
 			closeTransports(transports)
+			r.notifyCleaned(cleanup)
 			r.notifyRolledBack(stats)
 			r.notifyError(err.Code, err)
 			return nil, err
@@ -226,11 +228,25 @@ func (r *Registry) preparePlanLocked(
 	transportKey := makeTransportKey(profile)
 	transport := r.transports[transportKey]
 	if transport == nil {
-		transport = &transportEntry{runtime: newTransportRuntime(profile, nil)}
+		transport = &transportEntry{runtime: newTransportRuntime(profile, r)}
 		r.transports[transportKey] = transport
 		stats.CreatedTransports++
+		addTransportGenerationDelta(
+			&stats.TransportGenerations,
+			"create",
+			transportKey.tlsEnabled,
+			transportKey.protocol,
+			1,
+		)
 	} else {
 		stats.ReusedTransports++
+		addTransportGenerationDelta(
+			&stats.TransportGenerations,
+			"reuse",
+			transportKey.tlsEnabled,
+			transportKey.protocol,
+			1,
+		)
 	}
 	transport.refs++
 	owned.transportKeys = append(owned.transportKeys, transportKey)
@@ -530,6 +546,7 @@ func (c *Candidate) Rollback() {
 	c.stats.Current = cleanup.Current
 	c.owned = resourceRefs{}
 	closeTransports(transports)
+	c.registry.notifyCleaned(cleanup)
 	c.registry.notifyRolledBack(c.stats)
 }
 
@@ -582,6 +599,13 @@ func (r *Registry) releaseRefsLocked(owned resourceRefs) (CleanupStats, []*trans
 			delete(r.transports, key)
 			transports = append(transports, entry.runtime)
 			cleanup.ClosedTransports++
+			addTransportGenerationDelta(
+				&cleanup.TransportGenerations,
+				"retire",
+				key.tlsEnabled,
+				key.protocol,
+				1,
+			)
 		}
 	}
 	for _, key := range owned.selectionKeys {
@@ -643,6 +667,50 @@ func configErrorCode(err error) string {
 		return configErr.Code
 	}
 	return "REGISTRY_PREPARE_FAILED"
+}
+
+func addTransportGenerationDelta(
+	deltas *[]TransportGenerationDelta,
+	action string,
+	tlsEnabled bool,
+	protocol model.TransportProtocol,
+	count int,
+) {
+	if count <= 0 {
+		return
+	}
+	for index := range *deltas {
+		delta := &(*deltas)[index]
+		if delta.Action == action && delta.TLS == tlsEnabled && delta.Protocol == protocol {
+			delta.Count += count
+			return
+		}
+	}
+	*deltas = append(*deltas, TransportGenerationDelta{
+		Action:   action,
+		TLS:      tlsEnabled,
+		Protocol: protocol,
+		Count:    count,
+	})
+}
+
+// ObserveTLSHandshake forwards one terminal TLS handshake through the
+// registry observer panic boundary.
+func (r *Registry) ObserveTLSHandshake(
+	result, mode string,
+	protocol model.TransportProtocol,
+) {
+	r.observe(func(observer Observer) {
+		observer.TLSHandshake(result, mode, protocol)
+	})
+}
+
+// ObserveTLSFailure forwards one typed TLS failure through the registry
+// observer panic boundary.
+func (r *Registry) ObserveTLSFailure(class TLSFailureClass) {
+	r.observe(func(observer Observer) {
+		observer.TLSFailure(class)
+	})
 }
 
 func (r *Registry) notifyPrepared(stats PrepareStats) {

@@ -2,7 +2,10 @@ package upstream
 
 import (
 	"context"
+	"encoding/pem"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -420,10 +423,115 @@ func TestPlanSetDoubleReleasePanicsInsteadOfUnderflow(t *testing.T) {
 
 func TestRegistryRecoversObserverPanics(t *testing.T) {
 	registry := mustRegistry(t, 64, panicRegistryObserver{})
+	registry.ObserveTLSHandshake("success", "server_auth", model.TransportProtocolHTTP2)
+	registry.ObserveTLSFailure(TLSFailureHandshake)
 	candidate := mustPrepare(t, registry, []model.Upstream{
 		testUpstream("users", testEndpoint("http://users:8080", 1)),
 	})
 	candidate.Rollback()
+	if stats := registry.Stats(); stats.LiveEndpoints != 0 || stats.LiveTransports != 0 {
+		t.Fatalf("observer panic interrupted cleanup: %+v", stats)
+	}
+}
+
+func TestRegistryCompactsTransportGenerationDeltas(t *testing.T) {
+	observer := newRecordingRegistryObserver()
+	registry := mustRegistry(t, 64, observer)
+	candidate := mustPrepare(t, registry, []model.Upstream{
+		testUpstream("users", testEndpoint("http://users:8080", 1)),
+		testUpstream("orders", testEndpoint("http://orders:8080", 1)),
+		testUpstream("billing", testEndpoint("http://billing:8080", 1)),
+	})
+
+	prepared := <-observer.prepared
+	if len(prepared.TransportGenerations) != 2 {
+		t.Fatalf("prepare generation deltas=%+v, want create and reuse", prepared.TransportGenerations)
+	}
+	assertTransportGenerationDelta(
+		t,
+		prepared.TransportGenerations,
+		"create",
+		false,
+		model.TransportProtocolHTTP1,
+		1,
+	)
+	assertTransportGenerationDelta(
+		t,
+		prepared.TransportGenerations,
+		"reuse",
+		false,
+		model.TransportProtocolHTTP1,
+		2,
+	)
+
+	candidate.Rollback()
+	cleaned := <-observer.cleaned
+	if len(cleaned.TransportGenerations) != 1 {
+		t.Fatalf("cleanup generation deltas=%+v, want one retire", cleaned.TransportGenerations)
+	}
+	assertTransportGenerationDelta(
+		t,
+		cleaned.TransportGenerations,
+		"retire",
+		false,
+		model.TransportProtocolHTTP1,
+		1,
+	)
+}
+
+func TestRegistryForwardsTransportTLSObserverEvents(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	bundle, err := tlsmaterial.NewTrustBundle(
+		"roots",
+		pem.EncodeToMemory(&pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: server.Certificate().Raw,
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := testUpstream("orders", testEndpoint(server.URL, 1))
+	resource.Transport.Protocol = model.TransportProtocolHTTP1
+	resource.Transport.TLS = &model.UpstreamTLSPolicy{TrustBundleRef: "roots"}
+	observer := newRecordingRegistryObserver()
+	registry := mustRegistry(t, 64, observer)
+	candidate, err := registry.Prepare(model.ResourceSet{
+		Upstreams:    []model.Upstream{resource},
+		TrustBundles: []*tlsmaterial.TrustBundle{bundle},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := candidate.Commit()
+	plan, ok := set.Plan("orders")
+	if !ok {
+		t.Fatal("prepared plan is missing")
+	}
+	response, err := plan.transport.RoundTrip(
+		mustRequest(t, context.Background(), server.URL),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	select {
+	case event := <-observer.handshakes:
+		if event.result != "success" ||
+			event.mode != "server_auth" ||
+			event.protocol != model.TransportProtocolHTTP1 {
+			t.Fatalf("TLS handshake event=%+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("registry did not forward TLS handshake")
+	}
+	set.Retire()
 }
 
 type panicRegistryObserver struct{}
@@ -446,6 +554,87 @@ func (panicRegistryObserver) RegistryCleaned(CleanupStats) {
 
 func (panicRegistryObserver) RegistryError(string, error) {
 	panic("error")
+}
+
+func (panicRegistryObserver) TLSHandshake(string, string, model.TransportProtocol) {
+	panic("TLS handshake")
+}
+
+func (panicRegistryObserver) TLSFailure(TLSFailureClass) {
+	panic("TLS failure")
+}
+
+type recordingRegistryObserver struct {
+	prepared   chan PrepareStats
+	cleaned    chan CleanupStats
+	handshakes chan registryTLSHandshake
+}
+
+type registryTLSHandshake struct {
+	result   string
+	mode     string
+	protocol model.TransportProtocol
+}
+
+func newRecordingRegistryObserver() *recordingRegistryObserver {
+	return &recordingRegistryObserver{
+		prepared:   make(chan PrepareStats, 1),
+		cleaned:    make(chan CleanupStats, 1),
+		handshakes: make(chan registryTLSHandshake, 1),
+	}
+}
+
+func (o *recordingRegistryObserver) RegistryPrepared(stats PrepareStats) {
+	o.prepared <- stats
+}
+
+func (*recordingRegistryObserver) RegistryRolledBack(PrepareStats) {}
+
+func (*recordingRegistryObserver) RegistryRetired(RegistryStats) {}
+
+func (o *recordingRegistryObserver) RegistryCleaned(stats CleanupStats) {
+	o.cleaned <- stats
+}
+
+func (*recordingRegistryObserver) RegistryError(string, error) {}
+
+func (o *recordingRegistryObserver) TLSHandshake(
+	result, mode string,
+	protocol model.TransportProtocol,
+) {
+	o.handshakes <- registryTLSHandshake{
+		result:   result,
+		mode:     mode,
+		protocol: protocol,
+	}
+}
+
+func (*recordingRegistryObserver) TLSFailure(TLSFailureClass) {}
+
+func assertTransportGenerationDelta(
+	t *testing.T,
+	deltas []TransportGenerationDelta,
+	action string,
+	tlsEnabled bool,
+	protocol model.TransportProtocol,
+	count int,
+) {
+	t.Helper()
+	for _, delta := range deltas {
+		if delta.Action == action && delta.TLS == tlsEnabled && delta.Protocol == protocol {
+			if delta.Count != count {
+				t.Fatalf("generation delta=%+v, want count %d", delta, count)
+			}
+			return
+		}
+	}
+	t.Fatalf(
+		"missing generation delta action=%q tls=%t protocol=%q in %+v",
+		action,
+		tlsEnabled,
+		protocol,
+		deltas,
+	)
 }
 
 func mustRegistry(t testing.TB, maxRetiredSnapshots int, observer Observer) *Registry {

@@ -63,6 +63,15 @@ func (r *Registry) reapNow() {
 		cleanup.ClosedTransports += released.ClosedTransports
 		cleanup.ReleasedHealthTrackers += released.ReleasedHealthTrackers
 		cleanup.ReleasedRetryBudgets += released.ReleasedRetryBudgets
+		for _, delta := range released.TransportGenerations {
+			addTransportGenerationDelta(
+				&cleanup.TransportGenerations,
+				delta.Action,
+				delta.TLS,
+				delta.Protocol,
+				delta.Count,
+			)
+		}
 		transports = append(transports, closed...)
 		// Clearing ownership makes the exactly-once reference release explicit
 		// even if a future reaper pass observes the object again.

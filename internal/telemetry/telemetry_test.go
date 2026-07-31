@@ -258,6 +258,85 @@ func TestUpstreamRegistryMetricsUseReportedCurrentState(t *testing.T) {
 	}
 }
 
+func TestTLSAndTransportGenerationMetricsUseExactBoundedFamilies(t *testing.T) {
+	telemetry, err := New(false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	telemetry.TLSHandshake("success", "mtls", model.TransportProtocolHTTP2)
+	telemetry.TLSFailure(upstream.TLSFailureHostname)
+	telemetry.RegistryPrepared(upstream.PrepareStats{
+		TransportGenerations: []upstream.TransportGenerationDelta{
+			{
+				Action:   "create",
+				TLS:      true,
+				Protocol: model.TransportProtocolHTTP2,
+				Count:    2,
+			},
+			{
+				Action:   "reuse",
+				TLS:      false,
+				Protocol: model.TransportProtocolAuto,
+				Count:    3,
+			},
+		},
+	})
+	telemetry.RegistryCleaned(upstream.CleanupStats{
+		TransportGenerations: []upstream.TransportGenerationDelta{{
+			Action:   "retire",
+			TLS:      true,
+			Protocol: model.TransportProtocolHTTP1,
+			Count:    4,
+		}},
+	})
+
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	for _, fragment := range []string{
+		`gateway_upstream_tls_handshake_total{mode="mtls",protocol="http2",result="success"} 1`,
+		`gateway_upstream_tls_failure_total{class="hostname"} 1`,
+		`gateway_upstream_transport_generation_total{action="create",protocol="http2",tls="true"} 2`,
+		`gateway_upstream_transport_generation_total{action="reuse",protocol="auto",tls="false"} 3`,
+		`gateway_upstream_transport_generation_total{action="retire",protocol="http1",tls="true"} 4`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
+		}
+	}
+	if got := strings.Count(body, "gateway_upstream_tls_handshake_total{"); got != 12 {
+		t.Fatalf("TLS handshake series=%d, want 12", got)
+	}
+	if got := strings.Count(body, "gateway_upstream_tls_failure_total{"); got != 5 {
+		t.Fatalf("TLS failure series=%d, want 5", got)
+	}
+	if got := strings.Count(body, "gateway_upstream_transport_generation_total{"); got != 18 {
+		t.Fatalf("transport generation series=%d, want 18", got)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "gateway_upstream_tls_") &&
+			!strings.HasPrefix(line, "gateway_upstream_transport_generation_total") {
+			continue
+		}
+		for _, forbidden := range []string{
+			"upstream_id=",
+			"endpoint=",
+			"hostname=",
+			"server_name=",
+			"material_id=",
+			"fingerprint=",
+			"revision=",
+			"path=",
+			"subject=",
+			"san=",
+			"error=",
+		} {
+			if strings.Contains(line, forbidden) {
+				t.Fatalf("bounded TLS metric contains forbidden label %q: %s", forbidden, line)
+			}
+		}
+	}
+}
+
 func TestBalancerAndHashFallbackMetricsUseOnlyBoundedLabels(t *testing.T) {
 	telemetry, err := New(true, false)
 	if err != nil {

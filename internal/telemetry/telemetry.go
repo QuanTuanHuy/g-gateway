@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
@@ -40,6 +41,9 @@ type Telemetry struct {
 	registryResources     *prometheus.CounterVec
 	registryRollbacks     prometheus.Counter
 	transportCleanup      prometheus.Counter
+	tlsHandshake          [2][2][3]prometheus.Counter
+	tlsFailures           [5]prometheus.Counter
+	transportLifecycle    [3][2][3]prometheus.Counter
 	adminHandler          http.Handler
 }
 
@@ -56,6 +60,24 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 		return nil, fmt.Errorf("register process collector: %w", err)
 	}
 
+	tlsHandshake := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gateway",
+		Subsystem: "upstream",
+		Name:      "tls_handshake_total",
+		Help:      "Total terminal upstream TLS handshakes by bounded outcome.",
+	}, []string{"result", "mode", "protocol"})
+	tlsFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gateway",
+		Subsystem: "upstream",
+		Name:      "tls_failure_total",
+		Help:      "Total upstream TLS failures by stable class.",
+	}, []string{"class"})
+	transportLifecycle := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gateway",
+		Subsystem: "upstream",
+		Name:      "transport_generation_total",
+		Help:      "Total upstream transport generation lifecycle events.",
+	}, []string{"action", "tls", "protocol"})
 	telemetry := &Telemetry{
 		registry:              registry,
 		requestMetricsEnabled: requestMetricsEnabled,
@@ -153,9 +175,31 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 		"registry resources":      telemetry.registryResources,
 		"registry rollbacks":      telemetry.registryRollbacks,
 		"transport cleanup":       telemetry.transportCleanup,
+		"TLS handshakes":          tlsHandshake,
+		"TLS failures":            tlsFailures,
+		"transport generations":   transportLifecycle,
 	} {
 		if err := registry.Register(collector); err != nil {
 			return nil, fmt.Errorf("register %s metric: %w", name, err)
+		}
+	}
+	for resultIndex, result := range []string{"success", "failure"} {
+		for modeIndex, mode := range []string{"server_auth", "mtls"} {
+			for protocolIndex, protocol := range []string{"auto", "http1", "http2"} {
+				telemetry.tlsHandshake[resultIndex][modeIndex][protocolIndex] =
+					tlsHandshake.WithLabelValues(result, mode, protocol)
+			}
+		}
+	}
+	for classIndex, class := range []string{"trust", "hostname", "client_identity", "protocol", "handshake"} {
+		telemetry.tlsFailures[classIndex] = tlsFailures.WithLabelValues(class)
+	}
+	for actionIndex, action := range []string{"create", "reuse", "retire"} {
+		for tlsIndex, tlsLabel := range []string{"false", "true"} {
+			for protocolIndex, protocol := range []string{"auto", "http1", "http2"} {
+				telemetry.transportLifecycle[actionIndex][tlsIndex][protocolIndex] =
+					transportLifecycle.WithLabelValues(action, tlsLabel, protocol)
+			}
 		}
 	}
 	if requestMetricsEnabled {
@@ -300,6 +344,7 @@ func (t *Telemetry) RegistryPrepared(stats upstream.PrepareStats) {
 	t.registryResources.WithLabelValues("reused", "transport").Add(float64(stats.ReusedTransports))
 	t.registryResources.WithLabelValues("created", "selection_state").Add(float64(stats.CreatedSelections))
 	t.registryResources.WithLabelValues("reused", "selection_state").Add(float64(stats.ReusedSelections))
+	t.addTransportGenerations(stats.TransportGenerations)
 	t.setRegistryStats(stats.Current)
 }
 
@@ -307,6 +352,7 @@ func (t *Telemetry) RegistryPrepared(stats upstream.PrepareStats) {
 // registry gauges with the reported post-rollback state.
 func (t *Telemetry) RegistryRolledBack(stats upstream.PrepareStats) {
 	t.registryRollbacks.Inc()
+	t.addTransportGenerations(stats.TransportGenerations)
 	t.setRegistryStats(stats.Current)
 }
 
@@ -321,7 +367,120 @@ func (t *Telemetry) RegistryCleaned(stats upstream.CleanupStats) {
 	t.registryResources.WithLabelValues("released", "endpoint").Add(float64(stats.ReleasedEndpoints))
 	t.registryResources.WithLabelValues("released", "transport").Add(float64(stats.ReleasedTransports))
 	t.transportCleanup.Add(float64(stats.ClosedTransports))
+	t.addTransportGenerations(stats.TransportGenerations)
 	t.setRegistryStats(stats.Current)
+}
+
+// TLSHandshake increments one pre-bound closed TLS handshake series.
+func (t *Telemetry) TLSHandshake(
+	result, mode string,
+	protocol model.TransportProtocol,
+) {
+	resultIndex, ok := tlsResultIndex(result)
+	if !ok {
+		return
+	}
+	modeIndex, ok := tlsModeIndex(mode)
+	if !ok {
+		return
+	}
+	protocolIndex, ok := transportProtocolIndex(protocol)
+	if !ok {
+		return
+	}
+	t.tlsHandshake[resultIndex][modeIndex][protocolIndex].Inc()
+}
+
+// TLSFailure increments one pre-bound stable TLS failure series.
+func (t *Telemetry) TLSFailure(class upstream.TLSFailureClass) {
+	index, ok := tlsFailureIndex(class)
+	if !ok {
+		return
+	}
+	t.tlsFailures[index].Inc()
+}
+
+func (t *Telemetry) addTransportGenerations(deltas []upstream.TransportGenerationDelta) {
+	for _, delta := range deltas {
+		actionIndex, ok := transportActionIndex(delta.Action)
+		if !ok || delta.Count <= 0 {
+			continue
+		}
+		protocolIndex, ok := transportProtocolIndex(delta.Protocol)
+		if !ok {
+			continue
+		}
+		tlsIndex := 0
+		if delta.TLS {
+			tlsIndex = 1
+		}
+		t.transportLifecycle[actionIndex][tlsIndex][protocolIndex].Add(float64(delta.Count))
+	}
+}
+
+func tlsResultIndex(result string) (int, bool) {
+	switch result {
+	case "success":
+		return 0, true
+	case "failure":
+		return 1, true
+	default:
+		return 0, false
+	}
+}
+
+func tlsModeIndex(mode string) (int, bool) {
+	switch mode {
+	case "server_auth":
+		return 0, true
+	case "mtls":
+		return 1, true
+	default:
+		return 0, false
+	}
+}
+
+func transportProtocolIndex(protocol model.TransportProtocol) (int, bool) {
+	switch protocol {
+	case model.TransportProtocolAuto:
+		return 0, true
+	case model.TransportProtocolHTTP1:
+		return 1, true
+	case model.TransportProtocolHTTP2:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func tlsFailureIndex(class upstream.TLSFailureClass) (int, bool) {
+	switch class {
+	case upstream.TLSFailureTrust:
+		return 0, true
+	case upstream.TLSFailureHostname:
+		return 1, true
+	case upstream.TLSFailureClientIdentity:
+		return 2, true
+	case upstream.TLSFailureProtocol:
+		return 3, true
+	case upstream.TLSFailureHandshake:
+		return 4, true
+	default:
+		return 0, false
+	}
+}
+
+func transportActionIndex(action string) (int, bool) {
+	switch action {
+	case "create":
+		return 0, true
+	case "reuse":
+		return 1, true
+	case "retire":
+		return 2, true
+	default:
+		return 0, false
+	}
 }
 
 func (t *Telemetry) setRegistryStats(stats upstream.RegistryStats) {

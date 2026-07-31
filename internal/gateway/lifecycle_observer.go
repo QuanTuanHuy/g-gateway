@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 	"github.com/QuanTuanHuy/g-gateway/internal/telemetry"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
@@ -66,6 +67,7 @@ func (o *lifecycleObserver) SnapshotRejected(buildErr *gatewayruntime.BuildError
 // compilation counts.
 func (o *lifecycleObserver) RegistryPrepared(stats upstream.PrepareStats) {
 	o.telemetry.RegistryPrepared(stats)
+	o.logTransportGenerations(stats.TransportGenerations)
 	o.logger.Info(
 		"upstream_registry_prepared",
 		"created_endpoints", stats.CreatedEndpoints,
@@ -88,6 +90,7 @@ func (o *lifecycleObserver) RegistryPrepared(stats upstream.PrepareStats) {
 // counts.
 func (o *lifecycleObserver) RegistryRolledBack(stats upstream.PrepareStats) {
 	o.telemetry.RegistryRolledBack(stats)
+	o.logTransportGenerations(stats.TransportGenerations)
 	o.logger.Warn(
 		"upstream_registry_rolled_back",
 		"created_endpoints", stats.CreatedEndpoints,
@@ -110,6 +113,7 @@ func (o *lifecycleObserver) RegistryRetired(stats upstream.RegistryStats) {
 // registry counts.
 func (o *lifecycleObserver) RegistryCleaned(stats upstream.CleanupStats) {
 	o.telemetry.RegistryCleaned(stats)
+	o.logTransportGenerations(stats.TransportGenerations)
 	o.logger.Info(
 		"upstream_registry_cleaned",
 		"released_endpoints", stats.ReleasedEndpoints,
@@ -129,6 +133,44 @@ func (o *lifecycleObserver) RegistryError(code string, _ error) {
 		"upstream_registry_error",
 		"code", code,
 	)
+}
+
+// TLSHandshake forwards one bounded TLS handshake result and logs only closed
+// dimensions.
+func (o *lifecycleObserver) TLSHandshake(
+	result, mode string,
+	protocol model.TransportProtocol,
+) {
+	o.telemetry.TLSHandshake(result, mode, protocol)
+	o.logger.Info(
+		"upstream_tls_handshake",
+		"result", result,
+		"mode", mode,
+		"protocol", protocol,
+	)
+}
+
+// TLSFailure forwards one stable TLS failure class without raw error details.
+func (o *lifecycleObserver) TLSFailure(class upstream.TLSFailureClass) {
+	o.telemetry.TLSFailure(class)
+	o.logger.Warn(
+		"upstream_tls_failure",
+		"class", class,
+	)
+}
+
+func (o *lifecycleObserver) logTransportGenerations(
+	deltas []upstream.TransportGenerationDelta,
+) {
+	for _, delta := range deltas {
+		o.logger.Info(
+			"upstream_transport_generation",
+			"action", delta.Action,
+			"tls", delta.TLS,
+			"protocol", delta.Protocol,
+			"count", delta.Count,
+		)
+	}
 }
 
 // ShutdownCleanup logs final bounded registry gauges after manager cleanup.

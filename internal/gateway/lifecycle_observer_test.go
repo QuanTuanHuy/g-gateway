@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 	"github.com/QuanTuanHuy/g-gateway/internal/telemetry"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
@@ -46,6 +47,12 @@ func TestLifecycleObserverForwardsMetricsAndLogsBoundedFields(t *testing.T) {
 		CreatedEndpoints:  2,
 		CreatedTransports: 1,
 		CreatedSelections: 1,
+		TransportGenerations: []upstream.TransportGenerationDelta{{
+			Action:   "create",
+			TLS:      true,
+			Protocol: model.TransportProtocolHTTP2,
+			Count:    1,
+		}},
 		Current: upstream.RegistryStats{
 			LiveEndpoints:       2,
 			LiveTransports:      1,
@@ -70,8 +77,16 @@ func TestLifecycleObserverForwardsMetricsAndLogsBoundedFields(t *testing.T) {
 		ReleasedEndpoints:  1,
 		ReleasedTransports: 1,
 		ClosedTransports:   1,
-		Current:            upstream.RegistryStats{},
+		TransportGenerations: []upstream.TransportGenerationDelta{{
+			Action:   "retire",
+			TLS:      true,
+			Protocol: model.TransportProtocolHTTP2,
+			Count:    1,
+		}},
+		Current: upstream.RegistryStats{},
 	})
+	observer.TLSHandshake("success", "mtls", model.TransportProtocolHTTP2)
+	observer.TLSFailure(upstream.TLSFailureHostname)
 	observer.RegistryError(
 		"UPSTREAM_ENDPOINT_INVALID",
 		errors.New("http://secret-host.example client=203.0.113.99 hash=abc123"),
@@ -85,6 +100,9 @@ func TestLifecycleObserverForwardsMetricsAndLogsBoundedFields(t *testing.T) {
 		"upstream_registry_prepared",
 		"upstream_registry_rolled_back",
 		"upstream_registry_cleaned",
+		"upstream_transport_generation",
+		"upstream_tls_handshake",
+		"upstream_tls_failure",
 		"upstream_registry_error",
 		"upstream_shutdown_cleanup",
 	} {
@@ -97,6 +115,10 @@ func TestLifecycleObserverForwardsMetricsAndLogsBoundedFields(t *testing.T) {
 		`"code":"REFERENCE_NOT_FOUND"`,
 		`"stage":"resolve"`,
 		`"live_endpoints":2`,
+		`"action":"create"`,
+		`"tls":true`,
+		`"protocol":"http2"`,
+		`"class":"hostname"`,
 	} {
 		if !strings.Contains(logBody, fragment) {
 			t.Fatalf("logs do not contain bounded field %q:\n%s", fragment, logBody)
@@ -122,6 +144,10 @@ func TestLifecycleObserverForwardsMetricsAndLogsBoundedFields(t *testing.T) {
 		`gateway_runtime_active_revision 7`,
 		`gateway_upstream_registry_rollbacks_total 1`,
 		`gateway_upstream_transport_cleanup_total 1`,
+		`gateway_upstream_tls_handshake_total{mode="mtls",protocol="http2",result="success"} 1`,
+		`gateway_upstream_tls_failure_total{class="hostname"} 1`,
+		`gateway_upstream_transport_generation_total{action="create",protocol="http2",tls="true"} 1`,
+		`gateway_upstream_transport_generation_total{action="retire",protocol="http2",tls="true"} 1`,
 	} {
 		if !strings.Contains(metrics, fragment) {
 			t.Fatalf("metrics do not contain %q:\n%s", fragment, metrics)
