@@ -8,6 +8,8 @@ package model
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
 )
 
 // PredicateOperator identifies how a route predicate compares a header or
@@ -23,6 +25,10 @@ type HashSourceType string
 
 // HealthCheckType identifies the protocol used by an active health check.
 type HealthCheckType string
+
+// TransportProtocol selects the HTTP protocol policy for an upstream
+// transport.
+type TransportProtocol string
 
 const (
 	// PredicateExists matches when the named header or query parameter is
@@ -68,6 +74,15 @@ const (
 	// HealthCheckTCP probes raw TCP reachability without asserting application
 	// health.
 	HealthCheckTCP HealthCheckType = "tcp"
+
+	// TransportProtocolAuto selects HTTP/1.1 for cleartext upstreams and
+	// negotiates HTTP/2 with HTTP/1.1 fallback for TLS upstreams.
+	TransportProtocolAuto TransportProtocol = "auto"
+	// TransportProtocolHTTP1 requires HTTP/1.1.
+	TransportProtocolHTTP1 TransportProtocol = "http1"
+	// TransportProtocolHTTP2 requires HTTP/2 over TLS or h2c prior knowledge
+	// over cleartext.
+	TransportProtocolHTTP2 TransportProtocol = "http2"
 )
 
 // ResourceSet contains the canonical routes, services, and upstreams for one
@@ -82,6 +97,12 @@ type ResourceSet struct {
 	// Upstreams contains endpoint, balancing, transport, health, and retry
 	// resources referenced directly or through services.
 	Upstreams []Upstream
+	// Certificates contains immutable certificate-chain and private-key
+	// resources referenced by transport policies.
+	Certificates []*tlsmaterial.Certificate
+	// TrustBundles contains immutable CA resources referenced by transport
+	// policies.
+	TrustBundles []*tlsmaterial.TrustBundle
 }
 
 // Route binds one HTTP match expression to exactly one service or upstream.
@@ -341,6 +362,12 @@ type HashKeySource struct {
 // TransportConfig defines connection-pool identity and HTTP transport
 // timeouts for an upstream. Duration fields use time.Duration.
 type TransportConfig struct {
+	// Protocol selects automatic negotiation, strict HTTP/1.1, or strict
+	// HTTP/2/h2c behavior.
+	Protocol TransportProtocol
+	// TLS optionally references verified TLS trust and client identity
+	// resources. It must be nil for cleartext upstreams.
+	TLS *UpstreamTLSPolicy
 	// DialTimeout bounds connection establishment.
 	DialTimeout time.Duration
 	// ResponseHeaderTimeout bounds the wait for upstream response headers.
@@ -356,14 +383,31 @@ type TransportConfig struct {
 	MaxIdleConnectionsPerHost int
 }
 
+// UpstreamTLSPolicy references verified upstream TLS material and optionally
+// overrides the endpoint-derived server name used for SNI and verification.
+type UpstreamTLSPolicy struct {
+	// TrustBundleRef identifies a replacement trust bundle. Empty uses system
+	// roots.
+	TrustBundleRef string
+	// ClientCertificateRef identifies the client certificate used for mTLS.
+	// Empty disables client authentication.
+	ClientCertificateRef string
+	// ServerName overrides endpoint-derived SNI and hostname verification for
+	// every endpoint in the upstream.
+	ServerName string
+}
+
 // CloneResourceSet returns a deep, independently mutable copy of in. It clones
 // nested slices, pointer policies, and plugin configuration bytes without
-// validating or normalizing their contents.
+// validating or normalizing their contents. Immutable TLS material handles are
+// retained by pointer.
 func CloneResourceSet(in ResourceSet) ResourceSet {
 	out := ResourceSet{
-		Routes:    make([]Route, len(in.Routes)),
-		Services:  make([]Service, len(in.Services)),
-		Upstreams: make([]Upstream, len(in.Upstreams)),
+		Routes:       make([]Route, len(in.Routes)),
+		Services:     make([]Service, len(in.Services)),
+		Upstreams:    make([]Upstream, len(in.Upstreams)),
+		Certificates: append([]*tlsmaterial.Certificate(nil), in.Certificates...),
+		TrustBundles: append([]*tlsmaterial.TrustBundle(nil), in.TrustBundles...),
 	}
 
 	for i := range in.Routes {
@@ -383,6 +427,10 @@ func CloneResourceSet(in ResourceSet) ResourceSet {
 			[]HashKeySource(nil),
 			in.Upstreams[i].Balancer.HashKey.Sources...,
 		)
+		if in.Upstreams[i].Transport.TLS != nil {
+			value := *in.Upstreams[i].Transport.TLS
+			out.Upstreams[i].Transport.TLS = &value
+		}
 		out.Upstreams[i].Health = cloneHealthPolicy(in.Upstreams[i].Health)
 		out.Upstreams[i].Retry = cloneRetryPolicy(in.Upstreams[i].Retry)
 	}

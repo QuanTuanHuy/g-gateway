@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
 )
 
 func TestCloneResourceSetDoesNotAliasInput(t *testing.T) {
@@ -146,5 +148,37 @@ func TestCloneResourceSetClonesResiliencePolicies(t *testing.T) {
 		got.Upstreams[0].Health.Passive.UnhealthyStatuses[0] != 503 ||
 		got.Upstreams[0].Retry.Methods[0] != "GET" {
 		t.Fatalf("clone shares resilience state: %+v", got)
+	}
+}
+
+func TestCloneResourceSetClonesTLSReferencesAndSharesImmutableMaterial(t *testing.T) {
+	certificate := new(tlsmaterial.Certificate)
+	bundle := new(tlsmaterial.TrustBundle)
+	in := ResourceSet{
+		Certificates: []*tlsmaterial.Certificate{certificate},
+		TrustBundles: []*tlsmaterial.TrustBundle{bundle},
+		Upstreams: []Upstream{{
+			ID: "orders",
+			Transport: TransportConfig{
+				Protocol: TransportProtocolHTTP2,
+				TLS: &UpstreamTLSPolicy{
+					TrustBundleRef:       "roots",
+					ClientCertificateRef: "client",
+					ServerName:           "orders.internal",
+				},
+			},
+		}},
+	}
+
+	got := CloneResourceSet(in)
+	in.Upstreams[0].Transport.TLS.ServerName = "changed.internal"
+	in.Certificates[0] = nil
+	in.TrustBundles[0] = nil
+
+	if got.Upstreams[0].Transport.TLS.ServerName != "orders.internal" {
+		t.Fatal("CloneResourceSet() shares mutable TLS policy")
+	}
+	if got.Certificates[0] != certificate || got.TrustBundles[0] != bundle {
+		t.Fatal("CloneResourceSet() did not retain immutable material handles")
 	}
 }
