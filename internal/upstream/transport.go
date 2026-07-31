@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"net/http"
@@ -12,6 +13,15 @@ import (
 )
 
 const tlsTransportPolicyVersion uint8 = 1
+
+// TLSObserver receives bounded upstream TLS connection outcomes.
+type TLSObserver interface {
+	// ObserveTLSHandshake reports one terminal handshake result and its
+	// authentication mode.
+	ObserveTLSHandshake(result, mode string, protocol model.TransportProtocol)
+	// ObserveTLSFailure reports a stable typed failure class.
+	ObserveTLSFailure(class TLSFailureClass)
+}
 
 type transportKey struct {
 	scheme                    string
@@ -67,10 +77,10 @@ type transportRuntime struct {
 	closeProbeIdle      func()
 }
 
-func newTransportRuntime(profile transportProfile) *transportRuntime {
+func newTransportRuntime(profile transportProfile, observer TLSObserver) *transportRuntime {
 	key := makeTransportKey(profile)
-	production := newHTTPTransport(profile, key)
-	probe := newHTTPTransport(profile, key)
+	production := newHTTPTransport(profile, key, observer)
+	probe := newHTTPTransport(profile, key, observer)
 	return &transportRuntime{
 		key:                 key,
 		production:          production,
@@ -80,7 +90,11 @@ func newTransportRuntime(profile transportProfile) *transportRuntime {
 	}
 }
 
-func newHTTPTransport(profile transportProfile, key transportKey) *http.Transport {
+func newHTTPTransport(
+	profile transportProfile,
+	key transportKey,
+	observer TLSObserver,
+) *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   key.dialTimeout,
 		KeepAlive: 30 * time.Second,
@@ -135,7 +149,82 @@ func newHTTPTransport(profile transportProfile, key transportKey) *http.Transpor
 		}
 	}
 	transport.TLSClientConfig = tlsConfig
+	transport.DialTLSContext = newVerifiedTLSDialer(
+		dialer,
+		tlsConfig,
+		profile,
+		observer,
+	)
 	return transport
+}
+
+func newVerifiedTLSDialer(
+	dialer *net.Dialer,
+	baseTLS *tls.Config,
+	profile transportProfile,
+	observer TLSObserver,
+) func(context.Context, string, string) (net.Conn, error) {
+	mode := "server_auth"
+	mtls := profile.clientCertificate != nil
+	if mtls {
+		mode = "mtls"
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		serverName := profile.serverName
+		if serverName == "" {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			serverName = host
+		}
+		raw, err := dialer.DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+
+		attemptTLS := baseTLS.Clone()
+		attemptTLS.ServerName = serverName
+		connection := tls.Client(raw, attemptTLS)
+		if err := connection.HandshakeContext(ctx); err != nil {
+			_ = raw.Close()
+			observeTLSHandshake(observer, "failure", mode, profile.protocol)
+			if failure, classified := classifyTLSFailure(err, mtls); classified {
+				observeTLSFailure(observer, failure.Class)
+				return nil, failure
+			}
+			return nil, err
+		}
+		if profile.protocol == model.TransportProtocolHTTP2 &&
+			connection.ConnectionState().NegotiatedProtocol != "h2" {
+			_ = connection.Close()
+			failure := &TLSFailureError{
+				Class: TLSFailureProtocol,
+				Err:   errHTTP2Required,
+			}
+			observeTLSHandshake(observer, "failure", mode, profile.protocol)
+			observeTLSFailure(observer, failure.Class)
+			return nil, failure
+		}
+		observeTLSHandshake(observer, "success", mode, profile.protocol)
+		return connection, nil
+	}
+}
+
+func observeTLSHandshake(
+	observer TLSObserver,
+	result, mode string,
+	protocol model.TransportProtocol,
+) {
+	if observer != nil {
+		observer.ObserveTLSHandshake(result, mode, protocol)
+	}
+}
+
+func observeTLSFailure(observer TLSObserver, class TLSFailureClass) {
+	if observer != nil {
+		observer.ObserveTLSFailure(class)
+	}
 }
 
 // RoundTrip sends one request through the production upstream connection pool.

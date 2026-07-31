@@ -213,7 +213,7 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 	transportKey := makeTransportKey(profile)
 	transport := r.transports[transportKey]
 	if transport == nil {
-		transport = &transportEntry{runtime: newTransportRuntime(profile)}
+		transport = &transportEntry{runtime: newTransportRuntime(profile, nil)}
 		r.transports[transportKey] = transport
 		stats.CreatedTransports++
 	} else {

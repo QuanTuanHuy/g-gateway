@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -248,15 +249,19 @@ func profileTestPair(t *testing.T) ([]byte, []byte) {
 	}
 	now := time.Now()
 	template := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "Phase 3C1 Test Root"},
-		NotBefore:             now.Add(-time.Minute),
-		NotAfter:              now.Add(time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "Phase 3C1 Test Root"},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageClientAuth,
+			x509.ExtKeyUsageServerAuth,
+		},
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		DNSNames:              []string{"orders.internal"},
+		DNSNames:              []string{"orders.internal", "localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
 	if err != nil {
