@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -17,6 +18,9 @@ type ProbeTarget struct {
 	URL *url.URL
 	// Generation identifies the health runtime eligible to consume the result.
 	Generation uint64
+	// Transport is the isolated profile-aware round tripper owned by the
+	// target's transport generation.
+	Transport http.RoundTripper
 	// Policy contains the normalized active-health settings for this probe.
 	Policy model.ActiveHealthPolicy
 }
@@ -32,11 +36,10 @@ type ProbeResult struct {
 	Duration time.Duration
 }
 
-// Prober performs cancellable active health checks and owns any idle
-// connections used by those checks.
+// Prober performs cancellable active health checks.
 type Prober interface {
 	// Probe returns one classified result and must honor context cancellation.
 	Probe(context.Context, ProbeTarget) ProbeResult
-	// CloseIdleConnections idempotently releases idle probe connections.
+	// CloseIdleConnections idempotently releases any prober-owned state.
 	CloseIdleConnections()
 }

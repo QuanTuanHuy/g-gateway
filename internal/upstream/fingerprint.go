@@ -18,10 +18,16 @@ type budgetKey struct {
 	fingerprint [32]byte
 }
 
-func makeHealthKey(_ string, endpointIdentity string, policy model.HealthPolicy) healthKey {
-	// Health reuse follows endpoint identity and every health-policy semantic,
-	// but intentionally ignores endpoint weight.
+func makeHealthKey(
+	endpointIdentity string,
+	policy model.HealthPolicy,
+	transport transportKey,
+) healthKey {
+	// Health reuse follows endpoint identity, every health-policy semantic, and
+	// the complete transport identity, but intentionally ignores endpoint
+	// weight and unrelated retry or route policy.
 	digest := sha256.New()
+	writeString(digest, "gateway/health-key/v2")
 	if policy.Active != nil {
 		writeByte(digest, 1)
 		writeString(digest, string(policy.Active.Type))
@@ -48,9 +54,28 @@ func makeHealthKey(_ string, endpointIdentity string, policy model.HealthPolicy)
 	} else {
 		writeByte(digest, 0)
 	}
+	writeTransportKey(digest, transport)
 	var fingerprint [32]byte
 	copy(fingerprint[:], digest.Sum(nil))
 	return healthKey{endpointIdentity: endpointIdentity, fingerprint: fingerprint}
+}
+
+func writeTransportKey(destination hash.Hash, key transportKey) {
+	writeString(destination, key.scheme)
+	writeString(destination, key.serverName)
+	writeString(destination, string(key.protocol))
+	writeUint64(destination, uint64(key.dialTimeout))
+	writeUint64(destination, uint64(key.responseHeaderTimeout))
+	writeUint64(destination, uint64(key.idleConnectionTimeout))
+	writeUint64(destination, uint64(key.maxIdleConnections))
+	writeUint64(destination, uint64(key.maxIdleConnectionsPerHost))
+	writeBool(destination, key.tlsEnabled)
+	writeByte(destination, key.tlsPolicyVersion)
+	writeBool(destination, key.trustSystem)
+	_, _ = destination.Write(key.trustFingerprint[:])
+	_, _ = destination.Write(key.clientFingerprint[:])
+	writeUint16(destination, key.minTLSVersion)
+	writeBool(destination, key.disableCompression)
 }
 
 func makeBudgetKey(upstreamID string, policy model.RetryBudgetPolicy) budgetKey {
@@ -79,6 +104,14 @@ func writeString(dst hash.Hash, value string) {
 
 func writeByte(dst hash.Hash, value uint8) {
 	_, _ = dst.Write([]byte{value})
+}
+
+func writeBool(dst hash.Hash, value bool) {
+	if value {
+		writeByte(dst, 1)
+		return
+	}
+	writeByte(dst, 0)
 }
 
 func writeUint16(dst hash.Hash, value uint16) {

@@ -9,8 +9,9 @@ import (
 
 func TestHealthFingerprintIgnoresWeightAndChangesWithPolicy(t *testing.T) {
 	health, _ := validResiliencePolicies()
-	first := makeHealthKey("users", "users\x00http://a:80", health)
-	same := makeHealthKey("users", "users\x00http://a:80", health)
+	transport := makeTransportKey(transportTestProfile(t, "https", model.TransportProtocolHTTP2))
+	first := makeHealthKey("users\x00http://a:80", health, transport)
+	same := makeHealthKey("users\x00http://a:80", health, transport)
 	if first != same {
 		t.Fatal("same endpoint and policy produced different health keys")
 	}
@@ -19,8 +20,36 @@ func TestHealthFingerprintIgnoresWeightAndChangesWithPolicy(t *testing.T) {
 	active := *health.Active
 	active.HealthyInterval += time.Second
 	changed.Active = &active
-	if first == makeHealthKey("users", "users\x00http://a:80", changed) {
+	if first == makeHealthKey("users\x00http://a:80", changed, transport) {
 		t.Fatal("health interval change did not change key")
+	}
+}
+
+func TestHealthKeyIncludesCompleteTransportProfile(t *testing.T) {
+	health, _ := validResiliencePolicies()
+	base := makeTransportKey(transportTestProfile(t, "https", model.TransportProtocolHTTP2))
+	first := makeHealthKey("users\x00https://a:443", health, base)
+	tests := []struct {
+		name   string
+		change func(*transportKey)
+	}{
+		{name: "scheme", change: func(key *transportKey) { key.scheme = "http" }},
+		{name: "protocol", change: func(key *transportKey) { key.protocol = model.TransportProtocolHTTP1 }},
+		{name: "server name", change: func(key *transportKey) { key.serverName = "changed.internal" }},
+		{name: "trust bundle", change: func(key *transportKey) { key.trustFingerprint[0]++ }},
+		{name: "client certificate", change: func(key *transportKey) { key.clientFingerprint[0]++ }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := base
+			test.change(&changed)
+			if first == makeHealthKey("users\x00https://a:443", health, changed) {
+				t.Fatalf("%s missing from health key", test.name)
+			}
+		})
+	}
+	if first != makeHealthKey("users\x00https://a:443", health, base) {
+		t.Fatal("unrelated weight, retry, or route policy should not affect health key")
 	}
 }
 

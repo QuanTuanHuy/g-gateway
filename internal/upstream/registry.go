@@ -254,7 +254,7 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 		if endpoint.Weight > 0 {
 			var health *EndpointHealth
 			if resource.Health.Active != nil {
-				key := makeHealthKey(resource.ID, identity, resource.Health)
+				key := makeHealthKey(identity, resource.Health, transportKey)
 				healthRuntime := r.health[key]
 				if healthRuntime == nil {
 					health = newEndpointHealth(identity, resource.Health, r.generation.Add(1))
@@ -262,6 +262,7 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 						EndpointID: identity,
 						URL:        entry.runtime.target,
 						Generation: health.Generation(),
+						Transport:  transport.runtime.ProbeTransport(),
 						Policy:     *resource.Health.Active,
 					}, health)
 					healthRuntime = &healthEntry{runtime: health, registration: registration}
@@ -315,7 +316,7 @@ func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRef
 	}
 	for _, endpoint := range planEndpoints {
 		if endpoint.health != nil {
-			key := makeHealthKey(resource.ID, endpoint.identity, resource.Health)
+			key := makeHealthKey(endpoint.identity, resource.Health, transportKey)
 			plan.healthRegistrations = append(plan.healthRegistrations, r.health[key].registration)
 		}
 	}

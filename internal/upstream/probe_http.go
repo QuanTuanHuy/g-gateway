@@ -11,27 +11,15 @@ import (
 )
 
 type httpProber struct {
-	client    *http.Client
-	transport *http.Transport
 }
 
 func newHTTPProber() *httpProber {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	return &httpProber{
-		transport: transport,
-		client: &http.Client{
-			Transport: transport,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-	}
+	return &httpProber{}
 }
 
-// Probe performs one HTTP GET using a dedicated probe transport, does not
-// follow redirects, classifies configured status sets and timeout/transport
-// failures, and drains at most 4 KiB plus one byte before closing the body.
+// Probe performs one HTTP GET using the target transport, does not follow
+// redirects, classifies configured status sets and timeout/transport failures,
+// and drains at most 4 KiB plus one byte before closing the body.
 func (p *httpProber) Probe(parent context.Context, target ProbeTarget) (result ProbeResult) {
 	started := time.Now()
 	observation := Observation{Source: SourceActive, Kind: OutcomeTransportFailure}
@@ -41,7 +29,7 @@ func (p *httpProber) Probe(parent context.Context, target ProbeTarget) (result P
 		result.Duration = time.Since(started)
 	}()
 
-	if target.URL == nil {
+	if target.URL == nil || target.Transport == nil {
 		return result
 	}
 	ctx := parent
@@ -62,7 +50,7 @@ func (p *httpProber) Probe(parent context.Context, target ProbeTarget) (result P
 	if target.Policy.Host != "" {
 		request.Host = target.Policy.Host
 	}
-	response, err := p.client.Do(request)
+	response, err := target.Transport.RoundTrip(request)
 	if err != nil {
 		observation.Kind = classifyProbeError(ctx, err)
 		return result
@@ -81,11 +69,9 @@ func (p *httpProber) Probe(parent context.Context, target ProbeTarget) (result P
 	return result
 }
 
-// CloseIdleConnections idempotently closes idle connections owned by the HTTP
-// probe transport.
-func (p *httpProber) CloseIdleConnections() {
-	p.transport.CloseIdleConnections()
-}
+// CloseIdleConnections is a no-op because transport generations own probe
+// connection pools.
+func (*httpProber) CloseIdleConnections() {}
 
 func classifyProbeError(ctx context.Context, err error) OutcomeKind {
 	var networkError net.Error

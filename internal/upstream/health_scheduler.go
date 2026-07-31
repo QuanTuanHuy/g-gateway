@@ -33,8 +33,8 @@ type HealthCoordinatorStats struct {
 }
 
 // HealthCoordinator owns one time-ordered scheduler, one bounded ready queue,
-// and a fixed probe worker pool. Registrations activate lazily, and Close must
-// be called to release goroutines and probe transports.
+// stateless protocol probers, and a fixed probe worker pool. Registrations
+// activate lazily, and Close must be called to release its goroutines.
 type HealthCoordinator struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -357,8 +357,8 @@ func (c *HealthCoordinator) StopHealth() {
 	}
 }
 
-// Close idempotently stops scheduling, cancels in-flight probes, closes idle
-// probe connections, and waits for scheduler and workers. It returns an error
+// Close idempotently stops scheduling, cancels in-flight probes, releases
+// prober-owned state, and waits for scheduler and workers. It returns an error
 // wrapping ctx.Err when the supplied context expires first.
 func (c *HealthCoordinator) Close(ctx context.Context) error {
 	if c == nil {

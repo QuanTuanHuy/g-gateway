@@ -29,6 +29,8 @@ func TestHTTPProberClassifiesConfiguredStatusesWithoutFollowingRedirects(t *test
 	targetURL, _ := url.Parse(server.URL)
 	prober := newHTTPProber()
 	defer prober.CloseIdleConnections()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defer transport.CloseIdleConnections()
 
 	tests := []struct {
 		path       string
@@ -45,6 +47,7 @@ func TestHTTPProberClassifiesConfiguredStatusesWithoutFollowingRedirects(t *test
 				EndpointID: "users\x00" + server.URL,
 				URL:        targetURL,
 				Generation: 1,
+				Transport:  transport,
 				Policy: model.ActiveHealthPolicy{
 					Type:              model.HealthCheckHTTP,
 					Timeout:           time.Second,
@@ -68,8 +71,11 @@ func TestHTTPProberClassifiesDeadline(t *testing.T) {
 	}))
 	defer server.Close()
 	targetURL, _ := url.Parse(server.URL)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defer transport.CloseIdleConnections()
 	result := newHTTPProber().Probe(context.Background(), ProbeTarget{
-		URL: targetURL,
+		URL:       targetURL,
+		Transport: transport,
 		Policy: model.ActiveHealthPolicy{
 			Type:    model.HealthCheckHTTP,
 			Timeout: 10 * time.Millisecond,
@@ -79,6 +85,129 @@ func TestHTTPProberClassifiesDeadline(t *testing.T) {
 	if result.Observation.Kind != OutcomeTimeout {
 		t.Fatalf("observation = %+v, want timeout", result.Observation)
 	}
+}
+
+func TestHTTPProberUsesOnlyTargetTransportAndCapsBodyDrain(t *testing.T) {
+	firstBody := &countingReadCloser{reader: strings.NewReader(strings.Repeat("a", 8<<10))}
+	first := &countingRoundTripper{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       firstBody,
+		},
+	}
+	second := &countingRoundTripper{
+		response: &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+		},
+	}
+	targetURL := mustURL(t, "http://probe.example")
+	prober := newHTTPProber()
+	policy := model.ActiveHealthPolicy{
+		Type:              model.HealthCheckHTTP,
+		Timeout:           time.Second,
+		Path:              "/health",
+		HealthyStatuses:   []uint16{200},
+		UnhealthyStatuses: []uint16{503},
+	}
+
+	firstResult := prober.Probe(context.Background(), ProbeTarget{
+		URL: targetURL, Transport: first, Policy: policy,
+	})
+	secondResult := prober.Probe(context.Background(), ProbeTarget{
+		URL: targetURL, Transport: second, Policy: policy,
+	})
+
+	if first.calls != 1 || second.calls != 1 {
+		t.Fatalf("transport calls first=%d second=%d", first.calls, second.calls)
+	}
+	if firstResult.Observation.Kind != OutcomeSuccess ||
+		secondResult.Observation.Kind != OutcomeNeutral ||
+		secondResult.Observation.Status != http.StatusFound {
+		t.Fatalf("results first=%+v second=%+v", firstResult.Observation, secondResult.Observation)
+	}
+	if firstBody.read != 4<<10+1 || !firstBody.closed {
+		t.Fatalf("body read=%d closed=%v", firstBody.read, firstBody.closed)
+	}
+}
+
+func TestHTTPProberClassifiesCancellationTLSAndNilTransport(t *testing.T) {
+	targetURL := mustURL(t, "https://probe.example")
+	policy := model.ActiveHealthPolicy{
+		Type:    model.HealthCheckHTTP,
+		Timeout: 10 * time.Millisecond,
+		Path:    "/",
+	}
+	prober := newHTTPProber()
+
+	canceling := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})
+	result := prober.Probe(context.Background(), ProbeTarget{
+		URL: targetURL, Transport: canceling, Policy: policy,
+	})
+	if result.Observation.Kind != OutcomeTimeout {
+		t.Fatalf("cancellation observation=%+v", result.Observation)
+	}
+
+	tlsFailure := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, &TLSFailureError{Class: TLSFailureTrust, Err: x509UnknownAuthorityForProbe{}}
+	})
+	result = prober.Probe(context.Background(), ProbeTarget{
+		URL: targetURL, Transport: tlsFailure, Policy: policy,
+	})
+	if result.Observation.Kind != OutcomeTransportFailure {
+		t.Fatalf("TLS observation=%+v", result.Observation)
+	}
+
+	result = prober.Probe(context.Background(), ProbeTarget{
+		URL: targetURL, Policy: policy,
+	})
+	if result.Observation.Kind != OutcomeTransportFailure {
+		t.Fatalf("nil transport observation=%+v", result.Observation)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type countingRoundTripper struct {
+	calls    int
+	response *http.Response
+}
+
+func (t *countingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls++
+	return t.response, nil
+}
+
+type countingReadCloser struct {
+	reader *strings.Reader
+	read   int
+	closed bool
+}
+
+func (b *countingReadCloser) Read(destination []byte) (int, error) {
+	count, err := b.reader.Read(destination)
+	b.read += count
+	return count, err
+}
+
+func (b *countingReadCloser) Close() error {
+	b.closed = true
+	return nil
+}
+
+type x509UnknownAuthorityForProbe struct{}
+
+func (x509UnknownAuthorityForProbe) Error() string {
+	return "sensitive trust detail"
 }
 
 func TestTCPProberClassifiesSuccessFailureAndCancellation(t *testing.T) {
