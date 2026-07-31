@@ -71,7 +71,7 @@ func newConsistentHashHandler(t *testing.T, headerName string) (http.Handler, st
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := upstreamRegistry.Prepare(resources.Upstreams)
+	candidate, err := upstreamRegistry.Prepare(resources)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -91,9 +91,9 @@ func TestRegistryRejectsPrepareAtRetiredLimit(t *testing.T) {
 	}
 	set.Retire()
 
-	_, err := registry.Prepare([]model.Upstream{
+	_, err := registry.Prepare(model.ResourceSet{Upstreams: []model.Upstream{
 		testUpstream("next", testEndpoint("http://next:8080", 1)),
-	})
+	}})
 	assertConfigError(t, err, "RETIRED_SNAPSHOT_LIMIT", "runtime.max_retired_snapshots")
 
 	set.Release()

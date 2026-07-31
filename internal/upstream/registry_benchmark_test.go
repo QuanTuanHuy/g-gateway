@@ -45,7 +45,7 @@ func benchmarkRegistryReconcile(
 	if err != nil {
 		b.Fatal(err)
 	}
-	initial, err := registry.Prepare(baseline)
+	initial, err := registry.Prepare(model.ResourceSet{Upstreams: baseline})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func benchmarkRegistryReconcile(
 	b.ResetTimer()
 	b.StartTimer()
 	for b.Loop() {
-		candidate, prepareErr := registry.Prepare(revision)
+		candidate, prepareErr := registry.Prepare(model.ResourceSet{Upstreams: revision})
 		if prepareErr != nil {
 			b.Fatal(prepareErr)
 		}

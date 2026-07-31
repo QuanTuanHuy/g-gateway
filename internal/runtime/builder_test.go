@@ -244,7 +244,7 @@ func mustCandidate(t *testing.T, resources []model.Upstream) *upstream.Candidate
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := registry.Prepare(resources)
+	candidate, err := registry.Prepare(model.ResourceSet{Upstreams: resources})
 	if err != nil {
 		t.Fatal(err)
 	}

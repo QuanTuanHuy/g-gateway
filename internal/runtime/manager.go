@@ -100,7 +100,7 @@ func (m *Manager) Apply(revision uint64, resources model.ResourceSet) error {
 		return buildErr
 	}
 
-	candidate, err := m.upstreams.Prepare(resources.Upstreams)
+	candidate, err := m.upstreams.Prepare(resources)
 	if err != nil {
 		buildErr := upstreamBuildError(revision, err)
 		m.notifyRejected(buildErr, time.Since(started))

@@ -19,8 +19,8 @@ func newEndpointRuntime(upstreamID string, endpoint model.Endpoint) (*endpointRu
 	if err != nil {
 		return nil, fmt.Errorf("upstream %q endpoint: %w", upstreamID, err)
 	}
-	if target.Scheme != "http" || target.Host == "" {
-		return nil, fmt.Errorf("upstream %q endpoint: expected HTTP URL with host", upstreamID)
+	if (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
+		return nil, fmt.Errorf("upstream %q endpoint: expected HTTP or HTTPS URL with host", upstreamID)
 	}
 	targetCopy := *target
 	return &endpointRuntime{

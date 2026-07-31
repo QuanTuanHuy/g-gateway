@@ -2,15 +2,44 @@ package runtime
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
+	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
+
+func TestManagerPrepareResourceSetResolvesTLSMaterials(t *testing.T) {
+	resources := testResources()
+	resources.Upstreams[0].Endpoints[0].URL = "https://upstream.internal:8443"
+	resources.Upstreams[0].Transport.Protocol = model.TransportProtocolHTTP1
+	resources.Upstreams[0].Transport.TLS = &model.UpstreamTLSPolicy{
+		TrustBundleRef: "manager-root",
+		ServerName:     "upstream.internal",
+	}
+	resources.TrustBundles = []*tlsmaterial.TrustBundle{managerTestTrustBundle(t)}
+	manager := newRegistryManager(t)
+
+	if err := manager.Apply(1, resources); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := manager.Load(); snapshot == nil || snapshot.Revision() != 1 {
+		t.Fatalf("active snapshot=%+v", snapshot)
+	}
+	if stats := manager.UpstreamStats(); stats.LiveTransports != 1 {
+		t.Fatalf("upstream stats=%+v", stats)
+	}
+}
 
 func TestManagerCandidatePrepareFailureKeepsActiveSnapshotAndRegistry(t *testing.T) {
 	resources := testResources()
@@ -112,6 +141,43 @@ func TestManagerCloseWaitsForLeaseRelease(t *testing.T) {
 func newRegistryManager(t *testing.T) *Manager {
 	t.Helper()
 	return newRegistryManagerWithObserver(t, nil)
+}
+
+func managerTestTrustBundle(t *testing.T) *tlsmaterial.TrustBundle {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Manager Test Root"},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	certificateDER, err := x509.CreateCertificate(
+		rand.Reader,
+		template,
+		template,
+		publicKey,
+		privateKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificatePEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certificateDER,
+	})
+	bundle, err := tlsmaterial.NewTrustBundle("manager-root", certificatePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bundle
 }
 
 func newRegistryManagerWithObserver(t *testing.T, observer Observer) *Manager {

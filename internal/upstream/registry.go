@@ -132,22 +132,28 @@ func NewRegistry(options RegistryOptions) (*Registry, error) {
 	return registry, nil
 }
 
-// Prepare normalizes resources and transactionally acquires every runtime
-// needed by a candidate plan set. It reuses resources by their canonical keys,
-// rolls back all acquisitions on failure, and leaves committed plan sets
-// unchanged. The caller must Commit or Rollback a successful candidate.
-// Normalize may rewrite nested input state; clone resources first when the
-// input must be preserved.
+// Prepare clones and normalizes the upstream slice, resolves immutable TLS
+// material from the complete resource set, and transactionally acquires every
+// runtime needed by a candidate plan set. It reuses resources by canonical
+// keys, rolls back all acquisitions on failure, and leaves committed plan sets
+// unchanged. Route and service objects are not retained. The caller must
+// Commit or Rollback a successful candidate.
 //
 // Prepare returns stable ConfigError codes for closed registries, retained
 // generation backpressure, invalid configuration, and balancer budget
 // overflow.
-func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
+func (r *Registry) Prepare(resources model.ResourceSet) (*Candidate, error) {
 	if err := r.prepareAllowed(); err != nil {
 		r.notifyError(err.Code, err)
 		return nil, err
 	}
-	normalized, err := Normalize(resources)
+	resources = model.CloneResourceSet(resources)
+	normalized, err := Normalize(resources.Upstreams)
+	if err != nil {
+		r.notifyError(configErrorCode(err), err)
+		return nil, err
+	}
+	materials, err := newMaterialIndex(resources)
 	if err != nil {
 		r.notifyError(configErrorCode(err), err)
 		return nil, err
@@ -164,7 +170,16 @@ func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 	owned := resourceRefs{}
 	stats := PrepareStats{}
 	for upstreamIndex, resource := range normalized {
-		plan, compileErr := r.preparePlanLocked(resource, &owned, &stats)
+		profile, compileErr := compileTransportProfile(resource, materials)
+		if compileErr == nil {
+			plan, planErr := r.preparePlanLocked(resource, profile, &owned, &stats)
+			compileErr = planErr
+			if planErr == nil {
+				plans[resource.ID] = plan
+				stats.WRRSlots += len(plan.wrr.schedule)
+				stats.HashPoints += len(plan.continuum.hashes)
+			}
+		}
 		if compileErr != nil {
 			cleanup, transports := r.releaseRefsLocked(owned)
 			stats.Current = cleanup.Current
@@ -174,9 +189,6 @@ func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 			r.notifyError(configErrorCode(compileErr), compileErr)
 			return nil, compileErr
 		}
-		plans[resource.ID] = plan
-		stats.WRRSlots += len(plan.wrr.schedule)
-		stats.HashPoints += len(plan.continuum.hashes)
 		if stats.WRRSlots > MaxSnapshotWRRSlots || stats.HashPoints > MaxSnapshotHashPoints {
 			err := configError(
 				"BALANCER_BUDGET_EXCEEDED",
@@ -205,11 +217,12 @@ func (r *Registry) Prepare(resources []model.Upstream) (*Candidate, error) {
 	return candidate, nil
 }
 
-func (r *Registry) preparePlanLocked(resource model.Upstream, owned *resourceRefs, stats *PrepareStats) (*Plan, error) {
-	profile, err := compileTransportProfile(resource, materialIndex{})
-	if err != nil {
-		return nil, err
-	}
+func (r *Registry) preparePlanLocked(
+	resource model.Upstream,
+	profile transportProfile,
+	owned *resourceRefs,
+	stats *PrepareStats,
+) (*Plan, error) {
 	transportKey := makeTransportKey(profile)
 	transport := r.transports[transportKey]
 	if transport == nil {

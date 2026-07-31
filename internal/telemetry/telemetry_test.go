@@ -274,7 +274,7 @@ func TestBalancerAndHashFallbackMetricsUseOnlyBoundedLabels(t *testing.T) {
 			t.Errorf("Registry.Close() error = %v", err)
 		}
 	})
-	candidate, err := registry.Prepare([]model.Upstream{{
+	candidate, err := registry.Prepare(model.ResourceSet{Upstreams: []model.Upstream{{
 		ID:        "users",
 		Endpoints: []model.Endpoint{{URL: "http://secret-host.example:8080", Weight: 1}},
 		Balancer: model.BalancerPolicy{
@@ -291,7 +291,7 @@ func TestBalancerAndHashFallbackMetricsUseOnlyBoundedLabels(t *testing.T) {
 			MaxIdleConnections:        8,
 			MaxIdleConnectionsPerHost: 8,
 		},
-	}})
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}

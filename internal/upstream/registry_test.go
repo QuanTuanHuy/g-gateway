@@ -3,11 +3,168 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
+	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
 )
+
+func TestRegistryPrepareResourceSetUsesCompleteTransportGenerationIdentity(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	resources := tlsRegistryResourceSet(t)
+	firstCandidate, err := registry.Prepare(resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSet := firstCandidate.Commit()
+	defer firstSet.Retire()
+	firstPlan, _ := firstSet.Plan("orders")
+	if firstPlan.transport.production == firstPlan.transport.probe {
+		t.Fatal("production and probe transports share one pool")
+	}
+
+	sameProfile := []struct {
+		name   string
+		change func(*model.ResourceSet)
+	}{
+		{name: "weight", change: func(value *model.ResourceSet) {
+			value.Upstreams[0].Endpoints[0].Weight++
+		}},
+		{name: "retry", change: func(value *model.ResourceSet) {
+			value.Upstreams[0].Retry.TotalTimeout += time.Second
+		}},
+		{name: "health", change: func(value *model.ResourceSet) {
+			value.Upstreams[0].Health.Active.HealthyInterval += time.Second
+		}},
+		{name: "route", change: func(value *model.ResourceSet) {
+			value.Routes = append(value.Routes, model.Route{ID: "ignored-by-registry"})
+		}},
+	}
+	for _, test := range sameProfile {
+		t.Run("reuse "+test.name, func(t *testing.T) {
+			changed := model.CloneResourceSet(resources)
+			test.change(&changed)
+			candidate, prepareErr := registry.Prepare(changed)
+			if prepareErr != nil {
+				t.Fatal(prepareErr)
+			}
+			defer candidate.Rollback()
+			plan, _ := candidate.Plan("orders")
+			if plan.transport != firstPlan.transport {
+				t.Fatalf("%s-only change replaced transport generation", test.name)
+			}
+		})
+	}
+
+	differentProfile := []struct {
+		name   string
+		change func(*model.ResourceSet)
+	}{
+		{name: "trust bundle", change: func(value *model.ResourceSet) {
+			_, bundle := tlsRegistryMaterials(t)
+			value.TrustBundles[0] = bundle
+		}},
+		{name: "client certificate", change: func(value *model.ResourceSet) {
+			certificate, _ := tlsRegistryMaterials(t)
+			value.Certificates[0] = certificate
+		}},
+		{name: "server name", change: func(value *model.ResourceSet) {
+			value.Upstreams[0].Transport.TLS.ServerName = "changed.internal"
+		}},
+		{name: "scheme", change: func(value *model.ResourceSet) {
+			value.Upstreams[0].Endpoints[0].URL = "http://orders.internal:8080"
+			value.Upstreams[0].Transport.Protocol = model.TransportProtocolHTTP1
+			value.Upstreams[0].Transport.TLS = nil
+		}},
+		{name: "protocol", change: func(value *model.ResourceSet) {
+			value.Upstreams[0].Transport.Protocol = model.TransportProtocolHTTP1
+		}},
+	}
+	for _, test := range differentProfile {
+		t.Run("rotate "+test.name, func(t *testing.T) {
+			changed := model.CloneResourceSet(resources)
+			test.change(&changed)
+			candidate, prepareErr := registry.Prepare(changed)
+			if prepareErr != nil {
+				t.Fatal(prepareErr)
+			}
+			defer candidate.Rollback()
+			plan, _ := candidate.Plan("orders")
+			if plan.transport == firstPlan.transport ||
+				plan.transport.production == firstPlan.transport.production ||
+				plan.transport.probe == firstPlan.transport.probe {
+				t.Fatalf("%s change did not rotate both transport pools", test.name)
+			}
+		})
+	}
+}
+
+func TestRegistryPrepareResourceSetRollsBackEarlierTLSAcquisitions(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	before := registry.Stats()
+	resources := tlsRegistryResourceSet(t)
+	missing := testUpstream("missing", testEndpoint("https://missing.internal:8443", 1))
+	missing.Transport.Protocol = model.TransportProtocolHTTP1
+	missing.Transport.TLS = &model.UpstreamTLSPolicy{TrustBundleRef: "does-not-exist"}
+	resources.Upstreams = append(resources.Upstreams, missing)
+
+	_, err := registry.Prepare(resources)
+	assertConfigError(t, err, "TLS_MATERIAL_REF_NOT_FOUND", "upstreams.transport.tls.trust_bundle_ref")
+	if after := registry.Stats(); after != before {
+		t.Fatalf("registry stats after rollback=%+v, want %+v", after, before)
+	}
+}
+
+func TestMaterialRotationRetainsOldTransportUntilLeaseRelease(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	resources := tlsRegistryResourceSet(t)
+	firstCandidate, err := registry.Prepare(resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSet := firstCandidate.Commit()
+	if !firstSet.TryAcquire() {
+		t.Fatal("TryAcquire rejected committed set")
+	}
+	firstPlan, _ := firstSet.Plan("orders")
+	var productionClosed atomic.Int32
+	var probeClosed atomic.Int32
+	firstPlan.transport.closeProductionIdle = func() { productionClosed.Add(1) }
+	firstPlan.transport.closeProbeIdle = func() { probeClosed.Add(1) }
+
+	rotated := model.CloneResourceSet(resources)
+	_, bundle := tlsRegistryMaterials(t)
+	rotated.TrustBundles[0] = bundle
+	secondCandidate, err := registry.Prepare(rotated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSet := secondCandidate.Commit()
+	defer secondSet.Retire()
+	firstSet.Retire()
+	registry.reapNow()
+	if productionClosed.Load() != 0 || probeClosed.Load() != 0 {
+		t.Fatal("old transport closed while lease remained live")
+	}
+	if stats := registry.Stats(); stats.LiveTransports != 2 || stats.RetiredPlanSets != 1 {
+		t.Fatalf("stats with live old lease=%+v", stats)
+	}
+
+	firstSet.Release()
+	registry.reapNow()
+	if productionClosed.Load() != 1 || probeClosed.Load() != 1 {
+		t.Fatalf("close counts production=%d probe=%d", productionClosed.Load(), probeClosed.Load())
+	}
+	registry.reapNow()
+	if productionClosed.Load() != 1 || probeClosed.Load() != 1 {
+		t.Fatal("old transport pools closed more than once")
+	}
+	if stats := registry.Stats(); stats.LiveTransports != 1 || stats.RetiredPlanSets != 0 {
+		t.Fatalf("stats after old lease release=%+v", stats)
+	}
+}
 
 func TestRegistryReusesEqualRuntimeEntries(t *testing.T) {
 	registry := mustRegistry(t, 64, nil)
@@ -207,7 +364,7 @@ func TestRegistryOwnsDisabledEndpointAndReusesItWhenEnabled(t *testing.T) {
 func TestRegistryBudgetFailureRollsBackPartialPrepare(t *testing.T) {
 	registry := mustRegistry(t, 64, nil)
 	before := registry.Stats()
-	_, err := registry.Prepare(wrrBudgetResources())
+	_, err := registry.Prepare(model.ResourceSet{Upstreams: wrrBudgetResources()})
 	assertConfigError(t, err, "BALANCER_BUDGET_EXCEEDED", "upstreams")
 	if after := registry.Stats(); after != before {
 		t.Fatalf("registry stats after rollback = %+v, want %+v", after, before)
@@ -216,7 +373,7 @@ func TestRegistryBudgetFailureRollsBackPartialPrepare(t *testing.T) {
 
 func TestRegistryRejectsHashPointBudget(t *testing.T) {
 	registry := mustRegistry(t, 64, nil)
-	_, err := registry.Prepare(hashBudgetResources())
+	_, err := registry.Prepare(model.ResourceSet{Upstreams: hashBudgetResources()})
 	assertConfigError(t, err, "BALANCER_BUDGET_EXCEEDED", "upstreams")
 }
 
@@ -314,11 +471,45 @@ func mustRegistry(t testing.TB, maxRetiredSnapshots int, observer Observer) *Reg
 
 func mustPrepare(t testing.TB, registry *Registry, resources []model.Upstream) *Candidate {
 	t.Helper()
-	candidate, err := registry.Prepare(resources)
+	candidate, err := registry.Prepare(model.ResourceSet{Upstreams: resources})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return candidate
+}
+
+func tlsRegistryResourceSet(t *testing.T) model.ResourceSet {
+	t.Helper()
+	certificate, bundle := tlsRegistryMaterials(t)
+	health, retry := validResiliencePolicies()
+	resource := testUpstream("orders", testEndpoint("https://orders.internal:8443", 1))
+	resource.Transport.Protocol = model.TransportProtocolHTTP2
+	resource.Transport.TLS = &model.UpstreamTLSPolicy{
+		TrustBundleRef:       "roots",
+		ClientCertificateRef: "client",
+		ServerName:           "orders.internal",
+	}
+	resource.Health = health
+	resource.Retry = retry
+	return model.ResourceSet{
+		Upstreams:    []model.Upstream{resource},
+		Certificates: []*tlsmaterial.Certificate{certificate},
+		TrustBundles: []*tlsmaterial.TrustBundle{bundle},
+	}
+}
+
+func tlsRegistryMaterials(t *testing.T) (*tlsmaterial.Certificate, *tlsmaterial.TrustBundle) {
+	t.Helper()
+	certificatePEM, privateKeyPEM := profileTestPair(t)
+	certificate, err := tlsmaterial.NewCertificate("client", certificatePEM, privateKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := tlsmaterial.NewTrustBundle("roots", certificatePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certificate, bundle
 }
 
 func testEndpoint(rawURL string, weight uint32) model.Endpoint {

@@ -48,7 +48,7 @@ func TestPhase3BAcceptance(t *testing.T) {
 			Retry:     retry,
 		}
 	}
-	candidate, err := registry.Prepare(resources)
+	candidate, err := registry.Prepare(model.ResourceSet{Upstreams: resources})
 	if err != nil {
 		t.Fatal(err)
 	}
