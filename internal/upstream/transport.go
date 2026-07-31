@@ -72,6 +72,8 @@ type transportRuntime struct {
 	key                 transportKey
 	production          *http.Transport
 	probe               *http.Transport
+	observer            TLSObserver
+	mtls                bool
 	closeOnce           sync.Once
 	closeProductionIdle func()
 	closeProbeIdle      func()
@@ -85,6 +87,8 @@ func newTransportRuntime(profile transportProfile, observer TLSObserver) *transp
 		key:                 key,
 		production:          production,
 		probe:               probe,
+		observer:            observer,
+		mtls:                profile.clientCertificate != nil,
 		closeProductionIdle: production.CloseIdleConnections,
 		closeProbeIdle:      probe.CloseIdleConnections,
 	}
@@ -229,13 +233,36 @@ func observeTLSFailure(observer TLSObserver, class TLSFailureClass) {
 
 // RoundTrip sends one request through the production upstream connection pool.
 func (r *transportRuntime) RoundTrip(request *http.Request) (*http.Response, error) {
-	return r.production.RoundTrip(request)
+	response, err := r.production.RoundTrip(request)
+	return response, r.classifyRoundTripError(err)
 }
 
 // ProbeTransport returns the independently pooled transport reserved for
 // active HTTP health checks.
 func (r *transportRuntime) ProbeTransport() http.RoundTripper {
-	return r.probe
+	return classifiedProbeTransport{runtime: r}
+}
+
+type classifiedProbeTransport struct {
+	runtime *transportRuntime
+}
+
+// RoundTrip sends one active-health request and preserves typed TLS failures.
+func (t classifiedProbeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.runtime.probe.RoundTrip(request)
+	return response, t.runtime.classifyRoundTripError(err)
+}
+
+func (r *transportRuntime) classifyRoundTripError(err error) error {
+	if err == nil || IsTLSFailure(err) {
+		return err
+	}
+	failure, classified := classifyTLSFailure(err, r.mtls)
+	if !classified {
+		return err
+	}
+	observeTLSFailure(r.observer, failure.Class)
+	return failure
 }
 
 // CloseIdleConnections idempotently closes idle connections owned by the

@@ -80,6 +80,10 @@ func classifyTLSFailure(err error, mtls bool) (*TLSFailureError, bool) {
 	if errors.Is(err, errHTTP2Required) {
 		return &TLSFailureError{Class: TLSFailureProtocol, Err: err}, true
 	}
+	var existing *TLSFailureError
+	if errors.As(err, &existing) {
+		return existing, true
+	}
 
 	var hostnameError x509.HostnameError
 	if errors.As(err, &hostnameError) {
@@ -107,6 +111,13 @@ func classifyTLSFailure(err error, mtls bool) (*TLSFailureError, bool) {
 	}
 	var recordHeaderError tls.RecordHeaderError
 	if errors.As(err, &recordHeaderError) {
+		return &TLSFailureError{Class: TLSFailureHandshake, Err: err}, true
+	}
+	var operationError *net.OpError
+	if errors.As(err, &operationError) && operationError.Op == "remote error" {
+		// crypto/tls exposes peer alerts as tls.AlertError for QUIC, but TCP
+		// connections wrap an unexported tls.alert in this typed net.OpError.
+		// The alert text is deliberately not inspected.
 		return &TLSFailureError{Class: TLSFailureHandshake, Err: err}, true
 	}
 	return nil, false

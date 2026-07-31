@@ -213,6 +213,9 @@ func (h *handler) handleProxyError(writer http.ResponseWriter, request *http.Req
 	if errors.Is(request.Context().Err(), context.Canceled) {
 		return
 	}
+	if request.ProtoMajor == 1 && request.ContentLength != 0 {
+		writer.Header().Set("Connection", "close")
+	}
 	state, matched := requestctx.From(request.Context())
 	var responseHookError *responsePluginError
 	if errors.As(err, &responseHookError) {
