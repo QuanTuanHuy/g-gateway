@@ -429,6 +429,41 @@ func TestUpstreamResetBeforeHeadersIs502(t *testing.T) {
 	assertErrorResponse(t, recorder, http.StatusBadGateway, "UPSTREAM_CONNECTION_FAILED", "upstream connection failed")
 }
 
+func TestTypedTLSFailureIsMappedAndLoggedWithoutSensitiveDetails(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	handler := &handler{logger: logger}
+	request := httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil)
+	recorder := httptest.NewRecorder()
+	sensitive := []string{
+		"192.0.2.44:8443",
+		"/secrets/client.key",
+		"CN=private-client",
+		"remote alert bad certificate",
+	}
+	cause := errors.New(strings.Join(sensitive, " "))
+	failure := &upstream.TLSFailureError{
+		Class: upstream.TLSFailureClientIdentity,
+		Err:   cause,
+	}
+
+	handler.handleProxyError(recorder, request, failure)
+
+	if recorder.Code != http.StatusBadGateway ||
+		recorder.Body.String() != "{\"code\":\"UPSTREAM_TLS_FAILED\",\"message\":\"upstream TLS failed\"}\n" {
+		t.Fatalf("response=%d %q", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(logs.String(), "class=tls") ||
+		strings.Contains(logs.String(), "error=") {
+		t.Fatalf("log does not use closed class: %q", logs.String())
+	}
+	for _, value := range sensitive {
+		if strings.Contains(recorder.Body.String(), value) || strings.Contains(logs.String(), value) {
+			t.Fatalf("sensitive value %q leaked: response=%q log=%q", value, recorder.Body.String(), logs.String())
+		}
+	}
+}
+
 func TestUpstreamErrorLogsAreRateLimited(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))

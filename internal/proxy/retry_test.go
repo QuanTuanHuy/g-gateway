@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -71,6 +72,60 @@ func TestClassifyAttemptUsesOnlyRetryPolicy(t *testing.T) {
 				t.Fatalf("decision = %+v", decision)
 			}
 		})
+	}
+}
+
+func TestClassifyAttemptTreatsTypedTLSFailuresAsConnectionFailures(t *testing.T) {
+	policy := model.RetryPolicy{
+		RetryOn: model.RetryOnPolicy{ConnectionFailure: true},
+	}
+	classes := []upstream.TLSFailureClass{
+		upstream.TLSFailureTrust,
+		upstream.TLSFailureHostname,
+		upstream.TLSFailureClientIdentity,
+		upstream.TLSFailureProtocol,
+		upstream.TLSFailureHandshake,
+	}
+	for _, class := range classes {
+		t.Run(string(class), func(t *testing.T) {
+			tlsErr := &upstream.TLSFailureError{Class: class, Err: errors.New("sensitive")}
+			decision := classifyAttempt(policy, nil, tlsErr)
+			if !decision.Retry ||
+				decision.Reason != retryReasonConnectionFailure ||
+				decision.Observation.Kind != upstream.OutcomeTransportFailure {
+				t.Fatalf("decision=%+v", decision)
+			}
+		})
+	}
+
+	tlsTimeout := &upstream.TLSFailureError{
+		Class: upstream.TLSFailureHandshake,
+		Err:   timeoutError{},
+	}
+	decision := classifyAttempt(policy, nil, tlsTimeout)
+	if decision.Retry ||
+		decision.Reason != retryReasonResponseHeaderTimeout ||
+		decision.Observation.Kind != upstream.OutcomeTimeout {
+		t.Fatalf("TLS timeout decision=%+v", decision)
+	}
+}
+
+func TestClassifyAttemptDoesNotInspectGRPCStatusTrailers(t *testing.T) {
+	policy := model.RetryPolicy{
+		RetryOn: model.RetryOnPolicy{
+			ConnectionFailure: true,
+			Statuses:          []uint16{503},
+		},
+	}
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Trailer:    http.Header{"Grpc-Status": []string{"14"}},
+	}
+	decision := classifyAttempt(policy, response, nil)
+	if decision.Retry ||
+		decision.Reason != retryReasonNone ||
+		decision.Observation.Kind != upstream.OutcomeSuccess {
+		t.Fatalf("decision=%+v", decision)
 	}
 }
 

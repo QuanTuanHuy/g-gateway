@@ -238,9 +238,12 @@ func (h *handler) handleProxyError(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	if h.logLimiter.Allow(time.Now()) {
-		h.logger.Error("upstream request failed", "error", err)
+		h.logger.Error(
+			"upstream request failed",
+			"class",
+			publicUpstreamErrorClass(err),
+		)
 	}
-	var netError net.Error
 	status := http.StatusBadGateway
 	code := "UPSTREAM_CONNECTION_FAILED"
 	message := "upstream connection failed"
@@ -248,16 +251,38 @@ func (h *handler) handleProxyError(writer http.ResponseWriter, request *http.Req
 		status = http.StatusServiceUnavailable
 		code = "UPSTREAM_UNHEALTHY"
 		message = "upstream unhealthy"
-	} else if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netError) && netError.Timeout() {
+	} else if isUpstreamTimeout(err) {
 		status = http.StatusGatewayTimeout
 		code = "UPSTREAM_TIMEOUT"
 		message = "upstream timeout"
+	} else if upstream.IsTLSFailure(err) {
+		code = "UPSTREAM_TLS_FAILED"
+		message = "upstream TLS failed"
 	}
 	if matched && state.Runtime != nil {
 		h.writeMatchedResponse(writer, request, state, status, code, message, nil)
 		return
 	}
 	writeError(writer, status, code, message)
+}
+
+func publicUpstreamErrorClass(err error) string {
+	if errors.Is(err, upstream.ErrNoHealthyEndpoint) {
+		return "unhealthy"
+	}
+	if isUpstreamTimeout(err) {
+		return "timeout"
+	}
+	if upstream.IsTLSFailure(err) {
+		return "tls"
+	}
+	return "connection"
+}
+
+func isUpstreamTimeout(err error) bool {
+	var networkError net.Error
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.As(err, &networkError) && networkError.Timeout()
 }
 
 func (h *handler) writeMatchedResponse(

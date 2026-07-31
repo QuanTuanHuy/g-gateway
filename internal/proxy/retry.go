@@ -54,6 +54,11 @@ func classifyAttempt(policy model.RetryPolicy, response *http.Response, err erro
 			decision.Reason = retryReasonResponseHeaderTimeout
 			return decision
 		}
+		if upstream.IsTLSFailure(err) {
+			decision.Retry = policy.RetryOn.ConnectionFailure
+			decision.Reason = retryReasonConnectionFailure
+			return decision
+		}
 		var operationError *net.OpError
 		if errors.As(err, &operationError) && operationError.Op == "dial" {
 			decision.Retry = policy.RetryOn.ConnectFailure
