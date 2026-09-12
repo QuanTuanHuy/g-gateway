@@ -84,6 +84,7 @@ type Registry struct {
 	coordinator         *HealthCoordinator
 	generation          atomic.Uint64
 	activePlanSets      int
+	liveTunnelLeases    int
 	retired             []*PlanSet
 	reapWake            chan struct{}
 	reapStop            chan struct{}
@@ -337,11 +338,13 @@ func (r *Registry) preparePlanLocked(
 		}
 	}
 	plan := &Plan{
-		id:        resource.ID,
-		algorithm: resource.Balancer.Type,
-		endpoints: planEndpoints,
-		transport: transport.runtime,
-		budget:    budget,
+		id:           resource.ID,
+		algorithm:    resource.Balancer.Type,
+		endpoints:    planEndpoints,
+		transport:    transport.runtime,
+		registry:     r,
+		transportKey: transportKey,
+		budget:       budget,
 	}
 	for _, endpoint := range planEndpoints {
 		if endpoint.health != nil {
@@ -442,6 +445,7 @@ func (r *Registry) statsLocked() RegistryStats {
 		LiveRetryBudgets:    len(r.budgets),
 		ActivePlanSets:      r.activePlanSets,
 		RetiredPlanSets:     len(r.retired),
+		LiveTunnelLeases:    r.liveTunnelLeases,
 	}
 }
 
@@ -466,7 +470,8 @@ func (r *Registry) Close(ctx context.Context) error {
 			stats.LiveHealthTrackers == 0 &&
 			stats.LiveRetryBudgets == 0 &&
 			stats.ActivePlanSets == 0 &&
-			stats.RetiredPlanSets == 0 {
+			stats.RetiredPlanSets == 0 &&
+			stats.LiveTunnelLeases == 0 {
 			r.stopReaperOnce.Do(func() {
 				close(r.reapStop)
 			})

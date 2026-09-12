@@ -72,18 +72,20 @@ type transportRuntime struct {
 	key                 transportKey
 	production          *http.Transport
 	probe               *http.Transport
+	upgrade             *http.Transport
 	observer            TLSObserver
 	mtls                bool
 	closeOnce           sync.Once
 	closeProductionIdle func()
 	closeProbeIdle      func()
+	closeUpgradeIdle    func()
 }
 
 func newTransportRuntime(profile transportProfile, observer TLSObserver) *transportRuntime {
 	key := makeTransportKey(profile)
 	production := newHTTPTransport(profile, key, observer)
 	probe := newHTTPTransport(profile, key, observer)
-	return &transportRuntime{
+	runtime := &transportRuntime{
 		key:                 key,
 		production:          production,
 		probe:               probe,
@@ -92,6 +94,17 @@ func newTransportRuntime(profile transportProfile, observer TLSObserver) *transp
 		closeProductionIdle: production.CloseIdleConnections,
 		closeProbeIdle:      probe.CloseIdleConnections,
 	}
+	switch profile.protocol {
+	case model.TransportProtocolAuto:
+		upgradeProfile := profile
+		upgradeProfile.protocol = model.TransportProtocolHTTP1
+		upgradeProfile.transport.Protocol = model.TransportProtocolHTTP1
+		runtime.upgrade = newHTTPTransport(upgradeProfile, key, observer)
+		runtime.closeUpgradeIdle = runtime.upgrade.CloseIdleConnections
+	case model.TransportProtocolHTTP1:
+		runtime.upgrade = production
+	}
+	return runtime
 }
 
 func newHTTPTransport(
@@ -237,6 +250,14 @@ func (r *transportRuntime) RoundTrip(request *http.Request) (*http.Response, err
 	return response, r.classifyRoundTripError(err)
 }
 
+func (r *transportRuntime) roundTripUpgrade(request *http.Request) (*http.Response, error) {
+	if r == nil || r.upgrade == nil {
+		return nil, ErrUpgradeProtocol
+	}
+	response, err := r.upgrade.RoundTrip(request)
+	return response, r.classifyRoundTripError(err)
+}
+
 // ProbeTransport returns the independently pooled transport reserved for
 // active HTTP health checks.
 func (r *transportRuntime) ProbeTransport() http.RoundTripper {
@@ -274,6 +295,9 @@ func (r *transportRuntime) CloseIdleConnections() {
 		}
 		if r.closeProbeIdle != nil {
 			r.closeProbeIdle()
+		}
+		if r.closeUpgradeIdle != nil {
+			r.closeUpgradeIdle()
 		}
 	})
 }

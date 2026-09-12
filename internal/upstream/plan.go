@@ -17,6 +17,10 @@ var ErrNoEndpoint = errors.New("upstream plan has no selectable endpoint")
 // unhealthy or already present in the request's attempt set.
 var ErrNoHealthyEndpoint = errors.New("upstream plan has no healthy untried endpoint")
 
+// ErrUpgradeProtocol reports that strict HTTP/2 cannot perform a classic
+// HTTP/1.1 WebSocket upgrade.
+var ErrUpgradeProtocol = errors.New("upstream transport does not support HTTP/1.1 upgrade")
+
 type planEndpoint struct {
 	runtime  *endpointRuntime
 	health   *EndpointHealth
@@ -65,6 +69,8 @@ type Plan struct {
 	algorithm           model.BalancerType
 	endpoints           []planEndpoint
 	transport           *transportRuntime
+	registry            *Registry
+	transportKey        transportKey
 	wrr                 wrrSelector
 	continuum           continuum
 	hashKey             hashKeyExtractor
@@ -146,6 +152,8 @@ func (p *Plan) SelectNext(request *http.Request, attempted *AttemptSet) (Selecti
 		endpoint:     p.endpoints[ordinal].runtime,
 		health:       p.endpoints[ordinal].health,
 		transport:    p.transport,
+		registry:     p.registry,
+		transportKey: p.transportKey,
 		ordinal:      ordinal,
 		balancer:     p.algorithm,
 		hashFallback: fallback,
@@ -167,6 +175,8 @@ type Selection struct {
 	endpoint     *endpointRuntime
 	health       *EndpointHealth
 	transport    *transportRuntime
+	registry     *Registry
+	transportKey transportKey
 	ordinal      uint32
 	balancer     model.BalancerType
 	hashFallback bool
@@ -194,6 +204,73 @@ func (s Selection) RoundTrip(request *http.Request) (*http.Response, error) {
 		return nil, ErrNoEndpoint
 	}
 	return s.transport.RoundTrip(request)
+}
+
+// RoundTripUpgrade sends a classic Upgrade request through the selected
+// HTTP/1.1 transport role.
+func (s Selection) RoundTripUpgrade(request *http.Request) (*http.Response, error) {
+	if !s.Valid() {
+		return nil, ErrNoEndpoint
+	}
+	return s.transport.roundTripUpgrade(request)
+}
+
+// TunnelLease independently pins one selected transport generation after the
+// owning snapshot is released.
+type TunnelLease struct {
+	registry *Registry
+	key      transportKey
+	runtime  *transportRuntime
+	released atomic.Bool
+}
+
+// AcquireTunnelLease acquires independent ownership of the selected transport
+// generation.
+func (s Selection) AcquireTunnelLease() (*TunnelLease, error) {
+	if !s.Valid() || s.registry == nil {
+		return nil, ErrNoEndpoint
+	}
+	s.registry.mu.Lock()
+	entry := s.registry.transports[s.transportKey]
+	if entry == nil || entry.runtime != s.transport || entry.refs <= 0 {
+		s.registry.mu.Unlock()
+		return nil, ErrNoEndpoint
+	}
+	entry.refs++
+	s.registry.liveTunnelLeases++
+	s.registry.mu.Unlock()
+	return &TunnelLease{registry: s.registry, key: s.transportKey, runtime: s.transport}, nil
+}
+
+// Release idempotently drops this lease and closes the transport outside the
+// registry mutex when it held the final reference.
+func (l *TunnelLease) Release() {
+	if l == nil || !l.released.CompareAndSwap(false, true) {
+		return
+	}
+	registry := l.registry
+	registry.mu.Lock()
+	entry := registry.transports[l.key]
+	if entry == nil || entry.runtime != l.runtime || entry.refs <= 0 || registry.liveTunnelLeases <= 0 {
+		registry.mu.Unlock()
+		panic("upstream tunnel lease reference underflow")
+	}
+	entry.refs--
+	registry.liveTunnelLeases--
+	var closeRuntime *transportRuntime
+	cleanup := CleanupStats{ReleasedTransports: 1}
+	if entry.refs == 0 {
+		delete(registry.transports, l.key)
+		closeRuntime = entry.runtime
+		cleanup.ClosedTransports = 1
+		addTransportGenerationDelta(&cleanup.TransportGenerations, "retire", l.key.tlsEnabled, l.key.protocol, 1)
+	}
+	cleanup.Current = registry.statsLocked()
+	registry.mu.Unlock()
+	if closeRuntime != nil {
+		closeRuntime.CloseIdleConnections()
+	}
+	registry.notifyCleaned(cleanup)
 }
 
 // EndpointID returns the canonical endpoint identity, or an empty string for
