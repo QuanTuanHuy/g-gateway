@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -25,6 +26,7 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/config"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
+	"github.com/QuanTuanHuy/g-gateway/internal/tunnel"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -343,6 +345,46 @@ func TestServesHTTP1AndHTTP2OverTLS(t *testing.T) {
 	h2Protocols.SetHTTP2(true)
 	h2Transport.Protocols = h2Protocols
 	assertProtocol(t, &http.Client{Transport: h2Transport}, target, 2, "HTTP/1.1")
+}
+
+func TestGatewayUsesCertificateProviderForArbitrarySNI(t *testing.T) {
+	fixture := newGatewayFixture(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer fixture.shutdown(t)
+	if fixture.gateway.tlsConfig.GetCertificate == nil || len(fixture.gateway.tlsConfig.Certificates) != 0 {
+		t.Fatalf("TLS config does not use provider callback: %+v", fixture.gateway.tlsConfig)
+	}
+	first, err := fixture.gateway.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "api.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := fixture.gateway.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "other.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Certificate) == 0 || string(first.Certificate[0]) != string(second.Certificate[0]) {
+		t.Fatal("certificate provider changed certificate by SNI")
+	}
+}
+
+func TestGatewayTunnelAdmissionClosesWhenShutdownBegins(t *testing.T) {
+	fixture := newGatewayFixture(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	fixture.shutdown(t)
+	closer := io.NopCloser(strings.NewReader(""))
+	session, err := tunnel.NewSession(
+		tunnel.Endpoint{Reader: strings.NewReader(""), Writer: io.Discard, Closer: closer},
+		tunnel.Endpoint{Reader: strings.NewReader(""), Writer: io.Discard, Closer: io.NopCloser(strings.NewReader(""))},
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.gateway.tunnels.Register(session, func() {}); !errors.Is(err, tunnel.ErrAdmissionClosed) {
+		t.Fatalf("Register() after Shutdown error = %v", err)
+	}
 }
 
 func TestShutdownFlipsReadinessBeforeDrain(t *testing.T) {

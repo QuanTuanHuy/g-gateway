@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/config"
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
 	"github.com/QuanTuanHuy/g-gateway/internal/proxy"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 	"github.com/QuanTuanHuy/g-gateway/internal/telemetry"
+	"github.com/QuanTuanHuy/g-gateway/internal/tunnel"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
@@ -49,6 +51,7 @@ type Gateway struct {
 	telemetry *telemetry.Telemetry
 	lifecycle *lifecycleObserver
 	manager   *gatewayruntime.Manager
+	tunnels   *tunnel.Registry
 	logger    *slog.Logger
 	closing   atomic.Bool
 
@@ -75,9 +78,16 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	if err != nil {
 		return nil, fmt.Errorf("construct telemetry: %w", err)
 	}
-	certificate, err := tls.LoadX509KeyPair(bootstrap.HTTPS.CertificateFile, bootstrap.HTTPS.PrivateKeyFile)
+	provider, err := downstreamtls.LoadStatic(bootstrap.HTTPS.CertificateFile, bootstrap.HTTPS.PrivateKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load TLS key pair: %w", err)
+	}
+	tunnels := tunnel.NewRegistry(telemetryRuntime)
+	closeTunnels := func() {
+		tunnels.CloseAdmission()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = tunnels.Drain(ctx)
 	}
 	pluginRegistry, err := plugin.NewBuiltinRegistry()
 	if err != nil {
@@ -103,6 +113,7 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 		Observer:            lifecycle,
 	})
 	if err != nil {
+		closeTunnels()
 		return nil, fmt.Errorf("construct upstream registry: %w", err)
 	}
 	closeRegistry := func() {
@@ -111,11 +122,13 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 		_ = upstreamRegistry.Close(ctx)
 	}
 	if err := telemetryRuntime.RegisterResilienceProvider(upstreamRegistry); err != nil {
+		closeTunnels()
 		closeRegistry()
 		return nil, fmt.Errorf("register resilience telemetry: %w", err)
 	}
 	builder, err := gatewayruntime.NewBuilder(pluginRegistry)
 	if err != nil {
+		closeTunnels()
 		closeRegistry()
 		return nil, fmt.Errorf("construct runtime builder: %w", err)
 	}
@@ -127,6 +140,7 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 		lifecycle.ShutdownCleanup(manager.UpstreamStats())
 	}
 	if err := manager.Apply(1, resources); err != nil {
+		closeTunnels()
 		closeManager()
 		return nil, fmt.Errorf("activate initial runtime snapshot: %w", err)
 	}
@@ -134,8 +148,11 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 		Snapshots:           manager,
 		MaxRequestBodyBytes: bootstrap.Server.MaxRequestBodyBytes,
 		Logger:              logger,
+		Tunnels:             tunnels,
+		WebSockets:          telemetryRuntime,
 	})
 	if err != nil {
+		closeTunnels()
 		closeManager()
 		return nil, fmt.Errorf("construct proxy handler: %w", err)
 	}
@@ -149,15 +166,16 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	adminProtocols.SetHTTP1(true)
 
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{certificate},
-		MinVersion:   tls.VersionTLS12,
-		NextProtos:   []string{"h2", "http/1.1"},
+		GetCertificate: provider.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+		NextProtos:     []string{"h2", "http/1.1"},
 	}
 	gateway := &Gateway{
 		tlsConfig:   tlsConfig,
 		telemetry:   telemetryRuntime,
 		lifecycle:   lifecycle,
 		manager:     manager,
+		tunnels:     tunnels,
 		logger:      logger,
 		serveDone:   make(chan struct{}),
 		serveErrors: make(chan error, 3),
@@ -301,17 +319,39 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 }
 
 func (g *Gateway) shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	g.telemetry.SetReady(false)
+	g.tunnels.CloseAdmission()
 	g.manager.StopHealth()
 
 	trafficErrors := make(chan error, 2)
 	go func() { trafficErrors <- g.httpServer.Shutdown(ctx) }()
 	go func() { trafficErrors <- g.httpsServer.Shutdown(ctx) }()
-	errs := []error{<-trafficErrors, <-trafficErrors}
+	var errs []error
+	contextRecorded := false
+	appendError := func(err error) {
+		if err == nil {
+			return
+		}
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			if !contextRecorded {
+				errs = append(errs, ctx.Err())
+				contextRecorded = true
+			}
+			return
+		}
+		errs = append(errs, err)
+	}
+	appendError(<-trafficErrors)
+	appendError(<-trafficErrors)
 	if ctx.Err() != nil {
-		errs = append(errs, g.httpServer.Close(), g.httpsServer.Close())
+		appendError(g.httpServer.Close())
+		appendError(g.httpsServer.Close())
 	}
 	g.trafficRequests.Wait()
+	appendError(g.tunnels.Drain(ctx))
 	managerCtx := ctx
 	var managerCancel context.CancelFunc
 	if ctx.Err() != nil {
@@ -319,14 +359,14 @@ func (g *Gateway) shutdown(ctx context.Context) error {
 		defer managerCancel()
 	}
 	if err := g.manager.Close(managerCtx); err != nil {
-		errs = append(errs, err)
+		appendError(err)
 	}
 	g.lifecycle.ShutdownCleanup(g.manager.UpstreamStats())
 
 	if err := g.adminServer.Shutdown(ctx); err != nil {
-		errs = append(errs, err)
+		appendError(err)
 		if ctx.Err() != nil {
-			errs = append(errs, g.adminServer.Close())
+			appendError(g.adminServer.Close())
 		}
 	}
 	return errors.Join(errs...)
