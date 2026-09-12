@@ -44,6 +44,11 @@ type Telemetry struct {
 	tlsHandshake          [2][2][3]prometheus.Counter
 	tlsFailures           [5]prometheus.Counter
 	transportLifecycle    [3][2][3]prometheus.Counter
+	webSocketHandshakes   [6]prometheus.Counter
+	webSocketActive       prometheus.Gauge
+	webSocketClosed       [5]prometheus.Counter
+	webSocketDuration     prometheus.Histogram
+	webSocketBytes        [2]prometheus.Counter
 	adminHandler          http.Handler
 }
 
@@ -78,6 +83,24 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 		Name:      "transport_generation_total",
 		Help:      "Total upstream transport generation lifecycle events.",
 	}, []string{"action", "tls", "protocol"})
+	webSocketHandshakes := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gateway",
+		Subsystem: "websocket",
+		Name:      "handshakes_total",
+		Help:      "Total WebSocket handshake transactions by bounded result.",
+	}, []string{"result"})
+	webSocketClosed := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gateway",
+		Subsystem: "websocket",
+		Name:      "tunnels_closed_total",
+		Help:      "Total closed WebSocket tunnels by bounded reason.",
+	}, []string{"reason"})
+	webSocketBytes := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gateway",
+		Subsystem: "websocket",
+		Name:      "bytes_total",
+		Help:      "Total opaque WebSocket tunnel bytes by bounded direction.",
+	}, []string{"direction"})
 	telemetry := &Telemetry{
 		registry:              registry,
 		requestMetricsEnabled: requestMetricsEnabled,
@@ -160,24 +183,42 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 			Name:      "transport_cleanup_total",
 			Help:      "Total upstream transport runtimes closed during cleanup.",
 		}),
+		webSocketActive: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "websocket",
+			Name:      "active_tunnels",
+			Help:      "Current active WebSocket tunnels.",
+		}),
+		webSocketDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "gateway",
+			Subsystem: "websocket",
+			Name:      "tunnel_duration_seconds",
+			Help:      "WebSocket tunnel duration in seconds.",
+			Buckets:   prometheus.DefBuckets,
+		}),
 	}
 	for name, collector := range map[string]prometheus.Collector{
-		"active revision":         telemetry.activeRevision,
-		"snapshot apply duration": telemetry.snapshotApplyDuration,
-		"snapshot apply total":    telemetry.snapshotApplyTotal,
-		"compiled routes":         telemetry.compiledRoutes,
-		"compiled services":       telemetry.compiledServices,
-		"compiled plugins":        telemetry.compiledPlugins,
-		"live endpoints":          telemetry.liveEndpoints,
-		"live transports":         telemetry.liveTransports,
-		"live selection states":   telemetry.liveSelectionStates,
-		"retired snapshots":       telemetry.retiredSnapshots,
-		"registry resources":      telemetry.registryResources,
-		"registry rollbacks":      telemetry.registryRollbacks,
-		"transport cleanup":       telemetry.transportCleanup,
-		"TLS handshakes":          tlsHandshake,
-		"TLS failures":            tlsFailures,
-		"transport generations":   transportLifecycle,
+		"active revision":           telemetry.activeRevision,
+		"snapshot apply duration":   telemetry.snapshotApplyDuration,
+		"snapshot apply total":      telemetry.snapshotApplyTotal,
+		"compiled routes":           telemetry.compiledRoutes,
+		"compiled services":         telemetry.compiledServices,
+		"compiled plugins":          telemetry.compiledPlugins,
+		"live endpoints":            telemetry.liveEndpoints,
+		"live transports":           telemetry.liveTransports,
+		"live selection states":     telemetry.liveSelectionStates,
+		"retired snapshots":         telemetry.retiredSnapshots,
+		"registry resources":        telemetry.registryResources,
+		"registry rollbacks":        telemetry.registryRollbacks,
+		"transport cleanup":         telemetry.transportCleanup,
+		"TLS handshakes":            tlsHandshake,
+		"TLS failures":              tlsFailures,
+		"transport generations":     transportLifecycle,
+		"WebSocket handshakes":      webSocketHandshakes,
+		"WebSocket active tunnels":  telemetry.webSocketActive,
+		"WebSocket tunnel closes":   webSocketClosed,
+		"WebSocket tunnel duration": telemetry.webSocketDuration,
+		"WebSocket bytes":           webSocketBytes,
 	} {
 		if err := registry.Register(collector); err != nil {
 			return nil, fmt.Errorf("register %s metric: %w", name, err)
@@ -201,6 +242,15 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 					transportLifecycle.WithLabelValues(action, tlsLabel, protocol)
 			}
 		}
+	}
+	for index, result := range []string{"success", "invalid_request", "upstream_rejected", "upstream_failure", "plugin_failure", "draining"} {
+		telemetry.webSocketHandshakes[index] = webSocketHandshakes.WithLabelValues(result)
+	}
+	for index, reason := range []string{"client_eof", "upstream_eof", "idle_timeout", "shutdown", "io_error"} {
+		telemetry.webSocketClosed[index] = webSocketClosed.WithLabelValues(reason)
+	}
+	for index, direction := range []string{"downstream_to_upstream", "upstream_to_downstream"} {
+		telemetry.webSocketBytes[index] = webSocketBytes.WithLabelValues(direction)
 	}
 	if requestMetricsEnabled {
 		telemetry.requests = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -291,7 +341,12 @@ func (t *Telemetry) Wrap(next http.Handler) http.Handler {
 		started := time.Now()
 		writer := &metricsResponseWriter{ResponseWriter: response}
 		next.ServeHTTP(writer, request)
-		statusClass := strconv.Itoa(writer.statusCode()/100) + "xx"
+		status := writer.statusCode()
+		if state, ok := requestctx.From(request.Context()); ok &&
+			state.ResponseCode == http.StatusSwitchingProtocols {
+			status = http.StatusSwitchingProtocols
+		}
+		statusClass := strconv.Itoa(status/100) + "xx"
 		routeID := "__unmatched__"
 		if state, ok := requestctx.From(request.Context()); ok && state.Route != nil && state.Route.ID != "" {
 			routeID = state.Route.ID

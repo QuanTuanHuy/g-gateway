@@ -13,6 +13,7 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
+	"github.com/QuanTuanHuy/g-gateway/internal/tunnel"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
@@ -96,6 +97,84 @@ func TestRequestMetricsUseMatchedRouteID(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestMetricsUseCommittedUpgradeStatus(t *testing.T) {
+	telemetry, err := New(true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		state, ok := requestctx.From(request.Context())
+		if !ok {
+			t.Fatal("request context is missing")
+		}
+		state.Route = &requestctx.RouteMeta{ID: "events"}
+		state.ResponseCode = http.StatusSwitchingProtocols
+	})
+	wrapped := requestctx.Middleware(telemetry.Wrap(next))
+	wrapped.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://gateway/events", nil))
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	if fragment := `gateway_http_requests_total{method="GET",route_id="events",status_class="1xx"} 1`; !strings.Contains(body, fragment) {
+		t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
+	}
+}
+
+func TestWebSocketMetricsUseExactBoundedFamilies(t *testing.T) {
+	telemetry, err := New(false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range []string{"success", "invalid_request", "upstream_rejected", "upstream_failure", "plugin_failure", "draining"} {
+		telemetry.ObserveWebSocketHandshake(result)
+	}
+	telemetry.ObserveWebSocketHandshake("secret-route")
+	reasons := []tunnel.CloseReason{
+		tunnel.ReasonClientEOF,
+		tunnel.ReasonUpstreamEOF,
+		tunnel.ReasonIdleTimeout,
+		tunnel.ReasonShutdown,
+		tunnel.ReasonIOError,
+	}
+	for index, reason := range reasons {
+		telemetry.TunnelOpened()
+		telemetry.TunnelBytes(tunnel.DirectionDownstreamToUpstream, uint64(index+1))
+		telemetry.TunnelBytes(tunnel.DirectionUpstreamToDownstream, uint64(index+2))
+		telemetry.TunnelClosed(tunnel.Result{Reason: reason, Duration: time.Duration(index+1) * time.Second})
+	}
+	telemetry.TunnelBytes(tunnel.Direction(99), 100)
+	telemetry.TunnelClosed(tunnel.Result{Reason: tunnel.CloseReason("secret-peer"), Duration: time.Hour})
+
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	for _, fragment := range []string{
+		`gateway_websocket_handshakes_total{result="success"} 1`,
+		`gateway_websocket_handshakes_total{result="draining"} 1`,
+		`gateway_websocket_active_tunnels 0`,
+		`gateway_websocket_tunnels_closed_total{reason="shutdown"} 1`,
+		`gateway_websocket_tunnel_duration_seconds_count 5`,
+		`gateway_websocket_bytes_total{direction="downstream_to_upstream"} 15`,
+		`gateway_websocket_bytes_total{direction="upstream_to_downstream"} 20`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
+		}
+	}
+	if got := strings.Count(body, "gateway_websocket_handshakes_total{"); got != 6 {
+		t.Fatalf("handshake series=%d, want 6", got)
+	}
+	if got := strings.Count(body, "gateway_websocket_tunnels_closed_total{"); got != 5 {
+		t.Fatalf("close series=%d, want 5", got)
+	}
+	if got := strings.Count(body, "gateway_websocket_bytes_total{"); got != 2 {
+		t.Fatalf("direction series=%d, want 2", got)
+	}
+	for _, forbidden := range []string{"secret-route", "secret-peer", "route_id=", "upstream_id=", "endpoint=", proxyWebSocketKeyForMetrics} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("WebSocket metrics contain forbidden value %q", forbidden)
+		}
+	}
+}
+
+const proxyWebSocketKeyForMetrics = "dGhlIHNhbXBsZSBub25jZQ=="
 
 func TestRequestMetricsUseUnmatchedRouteIDFor404(t *testing.T) {
 	telemetry, err := New(true, false)
