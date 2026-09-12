@@ -19,8 +19,16 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	"github.com/QuanTuanHuy/g-gateway/internal/router"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
+	"github.com/QuanTuanHuy/g-gateway/internal/tunnel"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
+	websocketpkg "github.com/QuanTuanHuy/g-gateway/internal/websocket"
 )
+
+// WebSocketObserver receives bounded terminal handshake classifications.
+type WebSocketObserver interface {
+	// ObserveWebSocketHandshake records one fixed handshake result.
+	ObserveWebSocketHandshake(result string)
+}
 
 // RuntimeOptions supplies the required snapshot manager, request-body limit,
 // and optional structured logger for a proxy handler.
@@ -34,6 +42,10 @@ type RuntimeOptions struct {
 	// Logger receives rate-limited upstream failures; nil selects a discard
 	// logger.
 	Logger *slog.Logger
+	// Tunnels owns asynchronously established WebSocket sessions.
+	Tunnels *tunnel.Registry
+	// WebSockets receives bounded handshake outcomes.
+	WebSockets WebSocketObserver
 }
 
 type handler struct {
@@ -42,6 +54,8 @@ type handler struct {
 	proxy               *httputil.ReverseProxy
 	logger              *slog.Logger
 	logLimiter          errorLogLimiter
+	tunnels             *tunnel.Registry
+	websockets          WebSocketObserver
 }
 
 type responsePluginError struct {
@@ -76,6 +90,8 @@ func NewRuntime(options RuntimeOptions) (http.Handler, error) {
 		snapshots:           options.Snapshots,
 		maxRequestBodyBytes: options.MaxRequestBodyBytes,
 		logger:              options.Logger,
+		tunnels:             options.Tunnels,
+		websockets:          options.WebSockets,
 	}
 	handler.proxy = &httputil.ReverseProxy{
 		Transport: routeTransport{},
@@ -152,16 +168,10 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	state.Path = request.URL.Path
 	state.Params = match.Params
 
-	if request.Header.Get("Upgrade") != "" || headerHasToken(request.Header.Values("Connection"), "upgrade") {
-		h.writeMatchedResponse(
-			writer,
-			request,
-			state,
-			http.StatusNotImplemented,
-			"UPGRADE_NOT_SUPPORTED",
-			"upgrade not supported",
-			nil,
-		)
+	candidate := websocketpkg.Candidate(request)
+	webSocketPolicy := match.Route.WebSocketPolicy()
+	if candidate && webSocketPolicy.Enabled {
+		h.serveWebSocket(writer, request, state, match.Route, webSocketPolicy)
 		return
 	}
 	if request.ContentLength > h.maxRequestBodyBytes {

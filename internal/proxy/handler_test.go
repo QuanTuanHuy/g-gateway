@@ -221,8 +221,7 @@ func TestBodyOverLimit(t *testing.T) {
 	assertErrorResponse(t, recorder, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "request body too large")
 }
 
-func TestUpgradeNotSupported(t *testing.T) {
-	handler := newTestHandler(t, []string{http.MethodGet}, 1024, roundTripFunc(unexpectedRoundTrip(t)))
+func TestDisabledUpgradeIntentUsesOrdinaryHTTPWithoutHopHeaders(t *testing.T) {
 	tests := []struct {
 		name       string
 		connection string
@@ -234,6 +233,12 @@ func TestUpgradeNotSupported(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var upstreamConnection, upstreamUpgrade string
+			handler := newTestHandler(t, []string{http.MethodGet}, 1024, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				upstreamConnection = request.Header.Get("Connection")
+				upstreamUpgrade = request.Header.Get("Upgrade")
+				return response(http.StatusNoContent, ""), nil
+			}))
 			request := httptest.NewRequest(http.MethodGet, "http://gateway/hello", nil)
 			request.Header.Set("Connection", tt.connection)
 			request.Header.Set("Upgrade", tt.upgrade)
@@ -241,7 +246,9 @@ func TestUpgradeNotSupported(t *testing.T) {
 
 			handler.ServeHTTP(recorder, request)
 
-			assertErrorResponse(t, recorder, http.StatusNotImplemented, "UPGRADE_NOT_SUPPORTED", "upgrade not supported")
+			if recorder.Code != http.StatusNoContent || upstreamConnection != "" || upstreamUpgrade != "" {
+				t.Fatalf("status=%d upstream Connection=%q Upgrade=%q", recorder.Code, upstreamConnection, upstreamUpgrade)
+			}
 		})
 	}
 }
