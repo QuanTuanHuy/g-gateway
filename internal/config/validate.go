@@ -19,6 +19,7 @@ const (
 	apiVersionV1Alpha3 = "gateway/v1alpha3"
 	apiVersionV1Alpha4 = "gateway/v1alpha4"
 	apiVersionV1Alpha5 = "gateway/v1alpha5"
+	apiVersionV1Alpha6 = "gateway/v1alpha6"
 )
 
 func validateV1(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
@@ -47,6 +48,13 @@ func validateV1(version string, bootstrap *BootstrapConfig, resources *model.Res
 		return err
 	}
 	return nil
+}
+
+func validateV6(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha6 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha6)
+	}
+	return validateV5(apiVersionV1Alpha5, bootstrap, resources)
 }
 
 func validateV4(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {

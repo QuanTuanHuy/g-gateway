@@ -94,6 +94,92 @@ func TestDecodeV1Alpha5DefaultsProtocolToAuto(t *testing.T) {
 	}
 }
 
+func TestV1Alpha6PreservesWebSocketOverridePresence(t *testing.T) {
+	document := strings.Replace(validV5Document(t), "gateway/v1alpha5", "gateway/v1alpha6", 1)
+	document = strings.Replace(document,
+		"    upstream_ref: baseline",
+		"    service_ref: realtime\n    websocket:\n      enabled: false\n      idle_timeout: 0s",
+		1,
+	)
+	document = strings.Replace(document,
+		"services: []",
+		"services:\n  - id: realtime\n    upstream_ref: baseline\n    websocket:\n      enabled: true\n      idle_timeout: 5m",
+		1,
+	)
+
+	_, resources, err := Decode(strings.NewReader(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resources.Services[0].WebSocket.Enabled == nil || !*resources.Services[0].WebSocket.Enabled {
+		t.Fatal("service websocket enabled presence was lost")
+	}
+	if resources.Routes[0].WebSocket.Enabled == nil || *resources.Routes[0].WebSocket.Enabled {
+		t.Fatal("route explicit false was lost")
+	}
+	if resources.Routes[0].WebSocket.IdleTimeout == nil || *resources.Routes[0].WebSocket.IdleTimeout != 0 {
+		t.Fatal("route explicit zero idle timeout was lost")
+	}
+}
+
+func TestV1Alpha6RejectsInvalidWebSocketPolicy(t *testing.T) {
+	base := strings.Replace(validV5Document(t), "gateway/v1alpha5", "gateway/v1alpha6", 1)
+	tests := []struct {
+		name    string
+		policy  string
+		wantErr string
+	}{
+		{name: "unknown field", policy: "    websocket:\n      enabled: true\n      unknown: value\n", wantErr: "unknown"},
+		{name: "negative idle timeout", policy: "    websocket:\n      idle_timeout: -1s\n", wantErr: "must be non-negative"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := strings.Replace(base, "    upstream_ref: baseline\n", "    upstream_ref: baseline\n"+test.policy, 1)
+			if _, _, err := Decode(strings.NewReader(document)); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Decode() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestV1Alpha6AbsentWebSocketFieldsRemainAbsent(t *testing.T) {
+	document := strings.Replace(validV5Document(t), "gateway/v1alpha5", "gateway/v1alpha6", 1)
+	_, resources, err := Decode(strings.NewReader(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resources.Routes[0].WebSocket.Enabled != nil || resources.Routes[0].WebSocket.IdleTimeout != nil {
+		t.Fatalf("absent route websocket policy = %+v", resources.Routes[0].WebSocket)
+	}
+}
+
+func TestOlderVersionsDisableWebSocket(t *testing.T) {
+	certificateFile, privateKeyFile := writeTLSFiles(t)
+	documents := []string{
+		validDocument(certificateFile, privateKeyFile),
+		validV2Document(certificateFile, privateKeyFile),
+		validV3Document(t),
+		strings.Replace(validV3Document(t), "gateway/v1alpha3", "gateway/v1alpha4", 1),
+		validV5Document(t),
+	}
+	for _, document := range documents {
+		_, resources, err := Decode(strings.NewReader(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, route := range resources.Routes {
+			if route.WebSocket.Enabled != nil || route.WebSocket.IdleTimeout != nil {
+				t.Fatalf("legacy route websocket policy = %+v", route.WebSocket)
+			}
+		}
+		for _, service := range resources.Services {
+			if service.WebSocket.Enabled != nil || service.WebSocket.IdleTimeout != nil {
+				t.Fatalf("legacy service websocket policy = %+v", service.WebSocket)
+			}
+		}
+	}
+}
+
 func TestDecodeV1Alpha5RejectsUnknownAndDuplicateMaterial(t *testing.T) {
 	valid := validV5Document(t)
 	tests := []struct {
