@@ -46,6 +46,17 @@ func validateResources(revision uint64, resources model.ResourceSet) *BuildError
 				Cause:        err,
 			}
 		}
+		if service.WebSocket.IdleTimeout != nil && *service.WebSocket.IdleTimeout < 0 {
+			return &BuildError{
+				Code:         "WEBSOCKET_POLICY_INVALID",
+				Stage:        StageValidate,
+				Revision:     revision,
+				ResourceKind: "service",
+				ResourceID:   service.ID,
+				Field:        "websocket.idle_timeout",
+				Cause:        fmt.Errorf("idle timeout must be non-negative"),
+			}
+		}
 		services[service.ID] = service
 	}
 	for _, route := range resources.Routes {
@@ -94,6 +105,17 @@ func validateResources(revision uint64, resources model.ResourceSet) *BuildError
 				ResourceID:   route.ID,
 				Field:        "plugins",
 				Cause:        err,
+			}
+		}
+		if route.WebSocket.IdleTimeout != nil && *route.WebSocket.IdleTimeout < 0 {
+			return &BuildError{
+				Code:         "WEBSOCKET_POLICY_INVALID",
+				Stage:        StageValidate,
+				Revision:     revision,
+				ResourceKind: "route",
+				ResourceID:   route.ID,
+				Field:        "websocket.idle_timeout",
+				Cause:        fmt.Errorf("idle timeout must be non-negative"),
 			}
 		}
 	}

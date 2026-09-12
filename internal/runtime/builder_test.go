@@ -127,6 +127,87 @@ func TestBuilderCompilesImmutableEffectiveRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestBuildCompilesEffectiveWebSocketPolicy(t *testing.T) {
+	enabled, disabled := true, false
+	fiveMinutes := 5 * time.Minute
+	oneMinute := time.Minute
+	tests := []struct {
+		name   string
+		mutate func(*model.ResourceSet)
+		route  int
+		want   model.WebSocketPolicy
+	}{
+		{name: "defaults", mutate: func(*model.ResourceSet) {}, want: model.WebSocketPolicy{IdleTimeout: time.Minute}},
+		{name: "service enable and idle", mutate: func(resources *model.ResourceSet) {
+			resources.Services[0].WebSocket = model.WebSocketPolicyOverride{Enabled: &enabled, IdleTimeout: &fiveMinutes}
+		}, want: model.WebSocketPolicy{Enabled: true, IdleTimeout: fiveMinutes}},
+		{name: "route explicit false", mutate: func(resources *model.ResourceSet) {
+			resources.Services[0].WebSocket.Enabled = &enabled
+			resources.Routes[0].WebSocket.Enabled = &disabled
+		}, want: model.WebSocketPolicy{IdleTimeout: time.Minute}},
+		{name: "route idle only", mutate: func(resources *model.ResourceSet) {
+			resources.Services[0].WebSocket.Enabled = &enabled
+			resources.Routes[0].WebSocket.IdleTimeout = &fiveMinutes
+		}, want: model.WebSocketPolicy{Enabled: true, IdleTimeout: fiveMinutes}},
+		{name: "direct upstream route", mutate: func(resources *model.ResourceSet) {
+			resources.Routes[1].WebSocket = model.WebSocketPolicyOverride{Enabled: &enabled, IdleTimeout: &oneMinute}
+		}, route: 1, want: model.WebSocketPolicy{Enabled: true, IdleTimeout: oneMinute}},
+		{name: "auto upstream", mutate: func(resources *model.ResourceSet) {
+			resources.Routes[0].WebSocket.Enabled = &enabled
+			resources.Upstreams[0].Transport.Protocol = model.TransportProtocolAuto
+		}, want: model.WebSocketPolicy{Enabled: true, IdleTimeout: time.Minute}},
+		{name: "http1 upstream", mutate: func(resources *model.ResourceSet) {
+			resources.Routes[0].WebSocket.Enabled = &enabled
+			resources.Upstreams[0].Transport.Protocol = model.TransportProtocolHTTP1
+		}, want: model.WebSocketPolicy{Enabled: true, IdleTimeout: time.Minute}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resources := testResources()
+			test.mutate(&resources)
+			builder := mustBuilder(t, resources.Upstreams)
+			candidate := mustCandidate(t, resources.Upstreams)
+			snapshot, err := builder.Build(1, resources, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if policy := snapshot.routes[test.route].WebSocketPolicy(); policy != test.want {
+				t.Fatalf("effective websocket policy=%+v, want %+v", policy, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildRejectsWebSocketWithStrictHTTP2(t *testing.T) {
+	resources := testResources()
+	enabled := true
+	resources.Services[0].WebSocket.Enabled = &enabled
+	resources.Upstreams[0].Transport.Protocol = model.TransportProtocolHTTP2
+	builder := mustBuilder(t, resources.Upstreams)
+	candidate := mustCandidate(t, resources.Upstreams)
+
+	_, err := builder.Build(9, resources, candidate)
+	var buildErr *BuildError
+	if !errors.As(err, &buildErr) ||
+		buildErr.Code != "WEBSOCKET_UPSTREAM_PROTOCOL_INVALID" ||
+		buildErr.ResourceKind != "route" ||
+		buildErr.ResourceID != "users" ||
+		buildErr.Field != "websocket.enabled" {
+		t.Fatalf("Build() error = %#v", err)
+	}
+}
+
+func TestBuildRejectsNegativeWebSocketIdleTimeout(t *testing.T) {
+	resources := testResources()
+	negative := -time.Second
+	resources.Routes[0].WebSocket.IdleTimeout = &negative
+	builder := mustBuilder(t, resources.Upstreams)
+	candidate := mustCandidate(t, resources.Upstreams)
+	_, err := builder.Build(1, resources, candidate)
+	assertBuildError(t, err, "WEBSOCKET_POLICY_INVALID")
+}
+
 func TestBuilderRejectsInvalidResources(t *testing.T) {
 	base := testResources()
 	tests := []struct {

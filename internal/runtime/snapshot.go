@@ -40,6 +40,7 @@ type CompiledRoute struct {
 	plan         *upstream.Plan
 	plugins      *plugin.Chain
 	retry        model.RetryPolicy
+	websocket    model.WebSocketPolicy
 }
 
 // Snapshot is one immutable compiled configuration revision. Its routes and
@@ -132,6 +133,12 @@ func (r *CompiledRoute) RunResponse(state *requestctx.Context, response *http.Re
 // borrowed immutable data and must not be modified.
 func (r *CompiledRoute) RetryPolicy() model.RetryPolicy {
 	return r.retry
+}
+
+// WebSocketPolicy returns the effective immutable WebSocket policy for the
+// route.
+func (r *CompiledRoute) WebSocketPolicy() model.WebSocketPolicy {
+	return r.websocket
 }
 
 // ActivateUpstream lazily activates health scheduling for the route's
