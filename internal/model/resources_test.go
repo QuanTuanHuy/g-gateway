@@ -151,6 +151,35 @@ func TestCloneResourceSetClonesResiliencePolicies(t *testing.T) {
 	}
 }
 
+func TestCloneResourceSetClonesWebSocketOverrides(t *testing.T) {
+	enabled := true
+	idle := 5 * time.Minute
+	in := ResourceSet{
+		Routes: []Route{{ID: "events", WebSocket: WebSocketPolicyOverride{Enabled: &enabled}}},
+		Services: []Service{{
+			ID:        "realtime",
+			WebSocket: WebSocketPolicyOverride{IdleTimeout: &idle},
+		}},
+	}
+
+	got := CloneResourceSet(in)
+	*in.Routes[0].WebSocket.Enabled = false
+	*in.Services[0].WebSocket.IdleTimeout = time.Second
+
+	if got.Routes[0].WebSocket.Enabled == nil || !*got.Routes[0].WebSocket.Enabled {
+		t.Fatal("route enabled override was not cloned")
+	}
+	if got.Services[0].WebSocket.IdleTimeout == nil || *got.Services[0].WebSocket.IdleTimeout != 5*time.Minute {
+		t.Fatal("service idle override was not cloned")
+	}
+}
+
+func TestDefaultWebSocketIdleTimeout(t *testing.T) {
+	if DefaultWebSocketIdleTimeout != 60*time.Second {
+		t.Fatalf("default idle timeout=%s", DefaultWebSocketIdleTimeout)
+	}
+}
+
 func TestCloneResourceSetClonesTLSReferencesAndSharesImmutableMaterial(t *testing.T) {
 	certificate := new(tlsmaterial.Certificate)
 	bundle := new(tlsmaterial.TrustBundle)

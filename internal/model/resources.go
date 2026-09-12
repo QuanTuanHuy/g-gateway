@@ -31,6 +31,10 @@ type HealthCheckType string
 type TransportProtocol string
 
 const (
+	// DefaultWebSocketIdleTimeout is the effective inactivity limit when neither
+	// the route nor its service overrides it.
+	DefaultWebSocketIdleTimeout = 60 * time.Second
+
 	// PredicateExists matches when the named header or query parameter is
 	// present, regardless of its value.
 	PredicateExists PredicateOperator = "exists"
@@ -125,6 +129,9 @@ type Route struct {
 	// Resilience optionally replaces selected retry and total-timeout fields
 	// inherited from the resolved upstream.
 	Resilience RouteResiliencePolicy
+	// WebSocket optionally replaces selected WebSocket fields inherited from
+	// the resolved service.
+	WebSocket WebSocketPolicyOverride
 }
 
 // RouteMatch describes the conditions that must all match an HTTP request.
@@ -164,6 +171,26 @@ type Service struct {
 	UpstreamRef string
 	// Plugins contains service-scoped plugin attachments inherited by routes.
 	Plugins []PluginAttachment
+	// WebSocket contains WebSocket fields inherited by referencing routes.
+	WebSocket WebSocketPolicyOverride
+}
+
+// WebSocketPolicyOverride contains presence-aware WebSocket policy fields.
+// Nil fields inherit from the next broader scope.
+type WebSocketPolicyOverride struct {
+	// Enabled explicitly enables or disables WebSocket proxying when non-nil.
+	Enabled *bool
+	// IdleTimeout replaces the tunnel inactivity limit when non-nil. Zero
+	// disables idle expiration.
+	IdleTimeout *time.Duration
+}
+
+// WebSocketPolicy is the fully resolved policy used by a compiled route.
+type WebSocketPolicy struct {
+	// Enabled reports whether classic HTTP/1.1 WebSocket upgrades are allowed.
+	Enabled bool
+	// IdleTimeout is the inactivity limit; zero disables idle expiration.
+	IdleTimeout time.Duration
 }
 
 // PluginAttachment configures one named plugin at service or route scope.
@@ -415,10 +442,12 @@ func CloneResourceSet(in ResourceSet) ResourceSet {
 		out.Routes[i].Match = cloneRouteMatch(in.Routes[i].Match)
 		out.Routes[i].Plugins = clonePluginAttachments(in.Routes[i].Plugins)
 		out.Routes[i].Resilience = cloneRouteResiliencePolicy(in.Routes[i].Resilience)
+		out.Routes[i].WebSocket = cloneWebSocketPolicyOverride(in.Routes[i].WebSocket)
 	}
 	for i := range in.Services {
 		out.Services[i] = in.Services[i]
 		out.Services[i].Plugins = clonePluginAttachments(in.Services[i].Plugins)
+		out.Services[i].WebSocket = cloneWebSocketPolicyOverride(in.Services[i].WebSocket)
 	}
 	for i := range in.Upstreams {
 		out.Upstreams[i] = in.Upstreams[i]
@@ -435,6 +464,19 @@ func CloneResourceSet(in ResourceSet) ResourceSet {
 		out.Upstreams[i].Retry = cloneRetryPolicy(in.Upstreams[i].Retry)
 	}
 
+	return out
+}
+
+func cloneWebSocketPolicyOverride(in WebSocketPolicyOverride) WebSocketPolicyOverride {
+	out := in
+	if in.Enabled != nil {
+		value := *in.Enabled
+		out.Enabled = &value
+	}
+	if in.IdleTimeout != nil {
+		value := *in.IdleTimeout
+		out.IdleTimeout = &value
+	}
 	return out
 }
 
