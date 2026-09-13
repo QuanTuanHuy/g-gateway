@@ -55,10 +55,15 @@ func (h *handler) serveWebSocket(
 	tunnelCtx, cancel := context.WithCancel(context.Background())
 	var commitMu sync.Mutex
 	handshakeCommitted := false
+	var canceledAt time.Time
 	var pendingSession *tunnel.Session
 	cancelBeforeCommit := func() {
+		at := time.Now()
 		commitMu.Lock()
 		if !handshakeCommitted {
+			if canceledAt.IsZero() {
+				canceledAt = at
+			}
 			cancel()
 		}
 		session := pendingSession
@@ -81,11 +86,11 @@ func (h *handler) serveWebSocket(
 		return tunnelCtx.Err() == nil && request.Context().Err() == nil &&
 			(totalDeadline.IsZero() || time.Now().Before(totalDeadline))
 	}
-	finishCommit := func() bool {
+	finishCommit := func(flushedAt time.Time) bool {
 		commitMu.Lock()
 		defer commitMu.Unlock()
-		if tunnelCtx.Err() != nil || request.Context().Err() != nil ||
-			(!totalDeadline.IsZero() && !time.Now().Before(totalDeadline)) {
+		if !totalDeadline.IsZero() && !flushedAt.Before(totalDeadline) ||
+			(!canceledAt.IsZero() && !flushedAt.Before(canceledAt)) {
 			return false
 		}
 		handshakeCommitted = true
@@ -243,15 +248,16 @@ func (h *handler) serveWebSocket(
 		registration.Rollback()
 		return
 	}
-	if !finishCommit() {
+	flushedAt := time.Now()
+	stopClientLink()
+	if timer != nil {
+		timer.Stop()
+	}
+	if !finishCommit(flushedAt) {
 		session.ForceClose(tunnel.ReasonShutdown)
 		registration.Rollback()
 		h.observeWebSocket("upstream_failure")
 		return
-	}
-	stopClientLink()
-	if timer != nil {
-		timer.Stop()
 	}
 	_ = connection.SetWriteDeadline(time.Time{})
 	state.ResponseCode = http.StatusSwitchingProtocols
