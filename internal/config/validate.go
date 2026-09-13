@@ -20,6 +20,7 @@ const (
 	apiVersionV1Alpha4 = "gateway/v1alpha4"
 	apiVersionV1Alpha5 = "gateway/v1alpha5"
 	apiVersionV1Alpha6 = "gateway/v1alpha6"
+	apiVersionV1Alpha7 = "gateway/v1alpha7"
 )
 
 func validateV1(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
@@ -55,6 +56,27 @@ func validateV6(version string, bootstrap *BootstrapConfig, resources *model.Res
 		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha6)
 	}
 	return validateV5(apiVersionV1Alpha5, bootstrap, resources)
+}
+
+func validateV7(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
+	if version != apiVersionV1Alpha7 {
+		return fmt.Errorf("api_version: got %q, want %q", version, apiVersionV1Alpha7)
+	}
+	if resources.DownstreamTLS == nil {
+		return fmt.Errorf("downstream_tls: is required")
+	}
+	if strings.TrimSpace(resources.DownstreamTLS.DefaultCertificateRef) == "" {
+		return fmt.Errorf("downstream_tls.default_certificate_ref: must not be empty")
+	}
+	for index, binding := range resources.DownstreamTLS.SNIBindings {
+		if strings.TrimSpace(binding.CertificateRef) == "" {
+			return fmt.Errorf("downstream_tls.sni_bindings[%d].certificate_ref: must not be empty", index)
+		}
+		if len(binding.Hosts) == 0 {
+			return fmt.Errorf("downstream_tls.sni_bindings[%d].hosts: must not be empty", index)
+		}
+	}
+	return validateV6(apiVersionV1Alpha6, bootstrap, resources)
 }
 
 func validateV4(version string, bootstrap *BootstrapConfig, resources *model.ResourceSet) error {
