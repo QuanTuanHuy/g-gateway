@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
@@ -53,49 +52,16 @@ func (h *handler) serveWebSocket(
 	}
 
 	tunnelCtx, cancel := context.WithCancel(context.Background())
-	var commitMu sync.Mutex
-	handshakeCommitted := false
-	var canceledAt time.Time
-	var pendingSession *tunnel.Session
-	cancelBeforeCommit := func() {
-		at := time.Now()
-		commitMu.Lock()
-		if !handshakeCommitted {
-			if canceledAt.IsZero() {
-				canceledAt = at
-			}
-			cancel()
-		}
-		session := pendingSession
-		commitMu.Unlock()
-		if session != nil {
-			session.ForceClose(tunnel.ReasonShutdown)
-		}
-	}
-	stopClientLink := context.AfterFunc(request.Context(), cancelBeforeCommit)
 	totalTimeout := state.Runtime.RetryPolicy().TotalTimeout
 	var timer *time.Timer
 	var totalDeadline time.Time
 	if totalTimeout > 0 {
 		totalDeadline = time.Now().Add(totalTimeout)
-		timer = time.AfterFunc(totalTimeout, cancelBeforeCommit)
 	}
-	canContinueCommit := func() bool {
-		commitMu.Lock()
-		defer commitMu.Unlock()
-		return tunnelCtx.Err() == nil && request.Context().Err() == nil &&
-			(totalDeadline.IsZero() || time.Now().Before(totalDeadline))
-	}
-	finishCommit := func(flushedAt time.Time) bool {
-		commitMu.Lock()
-		defer commitMu.Unlock()
-		if !totalDeadline.IsZero() && !flushedAt.Before(totalDeadline) ||
-			(!canceledAt.IsZero() && !flushedAt.Before(canceledAt)) {
-			return false
-		}
-		handshakeCommitted = true
-		pendingSession = nil
-		return true
+	commitController := newWebSocketCommitController(tunnelCtx, cancel, totalDeadline)
+	stopClientLink := context.AfterFunc(request.Context(), commitController.cancelBeforeCommit)
+	if totalTimeout > 0 {
+		timer = time.AfterFunc(totalTimeout, commitController.cancelBeforeCommit)
 	}
 	committed := false
 	defer func() {
@@ -157,7 +123,7 @@ func (h *handler) serveWebSocket(
 		h.writeMatchedErrorWithoutHooks(writer, state, http.StatusInternalServerError, "PLUGIN_RESPONSE_FAILED", "response plugin failed")
 		return
 	}
-	if !canContinueCommit() {
+	if !commitController.canContinue(request.Context()) {
 		_ = response.Body.Close()
 		h.observeWebSocket("upstream_failure")
 		if request.Context().Err() == nil {
@@ -198,12 +164,7 @@ func (h *handler) serveWebSocket(
 		h.observeWebSocket("upstream_failure")
 		return
 	}
-	commitMu.Lock()
-	pendingSession = session
-	canceledBeforeRegistration := tunnelCtx.Err() != nil || request.Context().Err() != nil ||
-		(!totalDeadline.IsZero() && !time.Now().Before(totalDeadline))
-	commitMu.Unlock()
-	if canceledBeforeRegistration {
+	if !commitController.setPending(connection, request.Context()) {
 		session.ForceClose(tunnel.ReasonShutdown)
 		lease.Release()
 		h.observeWebSocket("upstream_failure")
@@ -253,13 +214,12 @@ func (h *handler) serveWebSocket(
 	if timer != nil {
 		timer.Stop()
 	}
-	if !finishCommit(flushedAt) {
+	if !commitController.finishCommit(flushedAt) {
 		session.ForceClose(tunnel.ReasonShutdown)
 		registration.Rollback()
 		h.observeWebSocket("upstream_failure")
 		return
 	}
-	_ = connection.SetWriteDeadline(time.Time{})
 	state.ResponseCode = http.StatusSwitchingProtocols
 	if !registration.Activate(tunnelCtx) {
 		session.ForceClose(tunnel.ReasonShutdown)

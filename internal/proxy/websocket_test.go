@@ -276,6 +276,28 @@ func TestWebSocketTimeoutUnblocksPending101Flush(t *testing.T) {
 	}
 }
 
+func TestWebSocketCommitWinsCancellationAfterSuccessfulFlush(t *testing.T) {
+	tunnelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	connection := &deadlineRecordingConn{}
+	controller := newWebSocketCommitController(tunnelCtx, cancel, time.Time{})
+	if !controller.setPending(connection, context.Background()) {
+		t.Fatal("setPending() = false")
+	}
+
+	flushedAt := time.Now()
+	controller.cancelAt(flushedAt.Add(time.Millisecond))
+	if tunnelCtx.Err() != nil {
+		t.Fatalf("post-flush cancellation canceled tunnel context: %v", tunnelCtx.Err())
+	}
+	if !controller.finishCommit(flushedAt) {
+		t.Fatal("finishCommit() = false after flush won")
+	}
+	if deadline := connection.deadline(); !deadline.IsZero() {
+		t.Fatalf("write deadline = %v, want cleared", deadline)
+	}
+}
+
 type delayedResponseHook struct{ delay time.Duration }
 
 func (hook delayedResponseHook) OnResponse(*requestctx.Context, *http.Response) error {
@@ -294,6 +316,25 @@ type blockingHijackWriter struct {
 	header     http.Header
 	connection net.Conn
 	buffered   *bufio.ReadWriter
+}
+
+type deadlineRecordingConn struct {
+	net.Conn
+	mu            sync.Mutex
+	writeDeadline time.Time
+}
+
+func (connection *deadlineRecordingConn) SetWriteDeadline(deadline time.Time) error {
+	connection.mu.Lock()
+	connection.writeDeadline = deadline
+	connection.mu.Unlock()
+	return nil
+}
+
+func (connection *deadlineRecordingConn) deadline() time.Time {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	return connection.writeDeadline
 }
 
 func (writer *blockingHijackWriter) Header() http.Header { return writer.header }
