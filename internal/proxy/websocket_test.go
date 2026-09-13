@@ -253,7 +253,7 @@ func webSocketResources(endpoint string, enabled bool) model.ResourceSet {
 	}
 }
 
-func newWebSocketTestHandler(t *testing.T, resources model.ResourceSet) (http.Handler, *gatewayruntime.Manager, *tunnel.Registry, *recordingWebSocketObserver) {
+func newWebSocketTestHandler(t testing.TB, resources model.ResourceSet) (http.Handler, *gatewayruntime.Manager, *tunnel.Registry, *recordingWebSocketObserver) {
 	t.Helper()
 	upstreamRegistry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
@@ -294,7 +294,7 @@ func newWebSocketTestHandler(t *testing.T, resources model.ResourceSet) (http.Ha
 	return requestctx.Middleware(handler), manager, tunnels, observer
 }
 
-func newUpgradeTestServer(t *testing.T, acceptOverride string, mutate func(http.Header)) *httptest.Server {
+func newUpgradeTestServer(t testing.TB, acceptOverride string, mutate func(http.Header)) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		connection, buffered, err := http.NewResponseController(writer).Hijack()
@@ -350,7 +350,7 @@ func validProxyWebSocketRequest() *http.Request {
 	return request
 }
 
-func dialTestWebSocket(t *testing.T, address string) (net.Conn, *bufio.ReadWriter, *http.Response) {
+func dialTestWebSocket(t testing.TB, address string) (net.Conn, *bufio.ReadWriter, *http.Response) {
 	t.Helper()
 	connection, err := net.DialTimeout("tcp", address, time.Second)
 	if err != nil {
