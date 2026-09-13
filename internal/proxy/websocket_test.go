@@ -352,8 +352,17 @@ func validProxyWebSocketRequest() *http.Request {
 
 func dialTestWebSocket(t testing.TB, address string) (net.Conn, *bufio.ReadWriter, *http.Response) {
 	t.Helper()
-	connection, err := net.DialTimeout("tcp", address, time.Second)
-	if err != nil {
+	deadline := time.Now().Add(2 * time.Second)
+	var connection net.Conn
+	var err error
+	for time.Now().Before(deadline) {
+		connection, err = net.DialTimeout("tcp", address, time.Second)
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if connection == nil {
 		t.Fatal(err)
 	}
 	buffered := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))

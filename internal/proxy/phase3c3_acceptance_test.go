@@ -48,6 +48,11 @@ func TestPhase3C3WebSocketLifecycle(t *testing.T) {
 		stream io.ReadWriter
 	}
 	connections := make([]connection, 0, profile.Tunnels)
+	defer func() {
+		for _, connection := range connections {
+			_ = connection.close.Close()
+		}
+	}()
 	latencies := make([]time.Duration, 0, profile.Tunnels*profile.MessagesPerTunnel)
 	started := time.Now()
 	for range profile.Tunnels {
@@ -57,12 +62,7 @@ func TestPhase3C3WebSocketLifecycle(t *testing.T) {
 		}
 		connections = append(connections, connection{close: networkConnection, stream: buffered})
 	}
-	if got := tunnels.Stats().Active; got != uint64(profile.Tunnels) {
-		t.Fatalf("active tunnels=%d, want %d", got, profile.Tunnels)
-	}
-	if got := manager.UpstreamStats().LiveTunnelLeases; got != profile.Tunnels {
-		t.Fatalf("live tunnel leases=%d, want %d", got, profile.Tunnels)
-	}
+	waitForPhase3C3Ownership(t, manager, tunnels, profile.Tunnels)
 
 	payload := []byte("phase3c3-opaque-message")
 	buffer := make([]byte, len(payload))
@@ -237,4 +237,16 @@ func waitForPhase3C3Cleanup(t *testing.T, manager interface{ UpstreamStats() ups
 	}
 	stats := manager.UpstreamStats()
 	t.Fatalf("cleanup tunnels=%+v leases=%d retired=%d", tunnels.Stats(), stats.LiveTunnelLeases, stats.RetiredPlanSets)
+}
+
+func waitForPhase3C3Ownership(t *testing.T, manager interface{ UpstreamStats() upstream.RegistryStats }, tunnels *tunnel.Registry, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if tunnels.Stats().Active == uint64(want) && manager.UpstreamStats().LiveTunnelLeases == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("ownership tunnels=%+v leases=%d, want %d", tunnels.Stats(), manager.UpstreamStats().LiveTunnelLeases, want)
 }

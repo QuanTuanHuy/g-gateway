@@ -83,6 +83,45 @@ func TestPhase3C1ExampleConfigurationLoads(t *testing.T) {
 	}
 }
 
+func TestPhase3C3ExampleConfigurationLoads(t *testing.T) {
+	document, err := os.ReadFile(filepath.Join("..", "..", "configs", "phase3c3.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateFile, privateKeyFile, caFile := writeV5MaterialFiles(t)
+	rendered := string(document)
+	for mounted, local := range map[string]string{
+		"/certs/server.crt":        filepath.ToSlash(certificateFile),
+		"/certs/server.key":        filepath.ToSlash(privateKeyFile),
+		"/secrets/internal-ca.pem": filepath.ToSlash(caFile),
+	} {
+		rendered = strings.ReplaceAll(rendered, mounted, local)
+	}
+	bootstrap, resources, err := Decode(strings.NewReader(rendered))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources.Routes) == 0 || len(resources.Services) == 0 {
+		t.Fatal("phase3c3 example lacks route/service resources")
+	}
+	if bootstrap.HTTPS.CertificateFile == "" || bootstrap.HTTPS.PrivateKeyFile == "" {
+		t.Fatal("phase3c3 example lacks static downstream identity")
+	}
+	service := resources.Services[0]
+	if service.WebSocket.Enabled == nil || !*service.WebSocket.Enabled || service.WebSocket.IdleTimeout == nil || *service.WebSocket.IdleTimeout != 60*time.Second {
+		t.Fatalf("service websocket policy=%+v", service.WebSocket)
+	}
+	if resources.Routes[0].ServiceRef != service.ID {
+		t.Fatalf("route service ref=%q, want %q", resources.Routes[0].ServiceRef, service.ID)
+	}
+	if resources.Routes[1].WebSocket.IdleTimeout == nil || *resources.Routes[1].WebSocket.IdleTimeout != 0 {
+		t.Fatalf("route timeout override=%+v", resources.Routes[1].WebSocket)
+	}
+	if resources.Upstreams[0].Transport.Protocol != model.TransportProtocolAuto {
+		t.Fatalf("upstream protocol=%q, want auto", resources.Upstreams[0].Transport.Protocol)
+	}
+}
+
 func TestDecodeV1Alpha5DefaultsProtocolToAuto(t *testing.T) {
 	document := strings.Replace(validV5Document(t), "      protocol: http2\n", "", 1)
 	_, resources, err := Decode(strings.NewReader(document))

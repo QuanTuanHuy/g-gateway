@@ -2,13 +2,15 @@
 
 **Date:** 2026-07-31
 
-**Status:** Approved design
+**Status:** Implementation complete; canonical WebSocket evidence pending
 
 **Parent:** [Go-native API Gateway phase roadmap](2026-07-21-go-native-api-gateway-phase-roadmap-design.md)
 
 **Preceded by:** [Phase 3C1 upstream TLS and protocol](2026-07-30-phase-3c1-upstream-tls-protocol-design.md)
 
 **Followed by:** Phase 3C2 dynamic downstream SNI certificates, then Phase 3D integrated acceptance
+
+**Evidence:** [Phase 3C3 current status](../../benchmarks/phase-3c3-current-status.md)
 
 ## 1. Decision summary
 
@@ -20,7 +22,7 @@ Phase 3C3 is intentionally implemented before Phase 3C2. To prevent later listen
 
 ## 2. Context
 
-Phase 3C1 completed outbound TLS/mTLS, HTTP/2 over TLS, h2c, native gRPC pass-through, and transport-generation rotation. The current gateway still rejects every request containing `Upgrade` or `Connection: upgrade`, uses one static downstream certificate loaded during process construction, and lets one request lease retain the complete immutable runtime snapshot until its handler returns.
+Phase 3C1 completed outbound TLS/mTLS, HTTP/2 over TLS, h2c, native gRPC pass-through, and transport-generation rotation. Before Phase 3C3 implementation, the gateway rejected every request containing `Upgrade` or `Connection: upgrade`, used one static downstream certificate loaded during process construction, and let one request lease retain the complete immutable runtime snapshot until its handler returned.
 
 Those behaviors are unsuitable for WebSocket traffic:
 

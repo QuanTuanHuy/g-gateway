@@ -163,8 +163,8 @@ Phase 3 được chia thành sáu sub-phase có design và acceptance độc l�
 1. [Phase 3A — Upstream runtime and balancing kernel](2026-07-26-phase-3a-upstream-runtime-balancing-kernel-design.md);
 2. [Phase 3B — active/passive health, timeout policy, replay-safe retry và retry budget](2026-07-27-phase-3b-health-timeout-retry-design.md);
 3. [Phase 3C1 — upstream TLS/mTLS, HTTP/2/h2c và native gRPC pass-through](2026-07-30-phase-3c1-upstream-tls-protocol-design.md);
-4. Phase 3C2 — generic immutable `Certificate` resources và downstream exact/wildcard SNI;
-5. Phase 3C3 — HTTP listener/runtime foundations cho WebSocket lifecycle;
+4. [Phase 3C3 — WebSocket lifecycle](2026-07-31-phase-3c3-websocket-lifecycle-design.md), intentionally implemented before 3C2;
+5. Phase 3C2 — generic immutable `Certificate` resources và downstream exact/wildcard SNI;
 6. Phase 3D — bounded access logging, integrated resilience acceptance và APISIX comparison.
 
 ### 7.1. Mục tiêu
@@ -211,7 +211,9 @@ Phase 3B đã bổ sung bounded active/passive health, deadline, replay-safe ret
 
 Phase 3C1 ở trạng thái `implementation complete; canonical protocol evidence pending`. Strict v1alpha5, immutable TLS material, verified upstream TLS/mTLS, HTTP/2 over TLS, h2c, native gRPC pass-through, separate production/probe pools, atomic transport-generation rotation và bounded TLS telemetry đã được triển khai. Normal/full local acceptance, lifecycle repetition, fuzz và developer-machine protocol benchmarks đã đạt; race trên CGO-capable host, reference-Linux protocol evidence và APISIX comparison còn pending. [Phase 3C1 current status](../../benchmarks/phase-3c1-current-status.md) ghi evidence chi tiết.
 
-Phase 3C2 nhận generic immutable `Certificate` resources từ Phase 3C1 và sở hữu downstream exact/wildcard SNI binding/rotation. Phase 3C3 nhận HTTP listener/runtime foundations và sở hữu WebSocket upgrade, long-lived tunnel lifecycle, timeout và drain. Phase 3D tiếp tục sở hữu bounded access logging và canonical integrated APISIX comparison.
+Phase 3C3 ở trạng thái `implementation complete; canonical WebSocket evidence pending`. Strict v1alpha6, WebSocket upgrade, long-lived opaque tunnel lifecycle, timeout, reload-safe transport lease, bounded telemetry, shutdown drain và static downstream certificate-provider seam đã được triển khai. Local correctness, lifecycle repetition và 30-second fuzz đã đạt; full relative-performance, race, reference-Linux và APISIX gates còn pending. [Phase 3C3 current status](../../benchmarks/phase-3c3-current-status.md) ghi evidence chi tiết.
+
+Phase 3C3 được triển khai có chủ đích trước Phase 3C2. Phase 3C2 vẫn nhận generic immutable `Certificate` resources từ Phase 3C1 và sở hữu downstream exact/wildcard SNI binding/rotation qua certificate-provider seam. Phase 3D tiếp tục sở hữu bounded access logging và canonical integrated APISIX comparison.
 
 Mọi sub-phase phải giữ router precedence và không được làm mất [deferred Phase 2 Task 16](../../benchmarks/phase-2-current-status.md#deferred-task-16).
 
@@ -392,6 +394,6 @@ Thay đổi chỉ ảnh hưởng implementation nội bộ của phase hiện t�
 
 Phase 3C1 upstream TLS/mTLS, HTTP/2/h2c và native gRPC pass-through đã được triển khai theo [design riêng](2026-07-30-phase-3c1-upstream-tls-protocol-design.md); developer-machine evidence được ghi tại [Phase 3C1 current status](../../benchmarks/phase-3c1-current-status.md). Canonical Linux/race/protocol gates vẫn pending nên toàn bộ Phase 3 chưa được đánh dấu accepted.
 
-Phase 3C2 tiếp theo nhận generic immutable `Certificate` resources và xây downstream exact/wildcard SNI selection/rotation. Phase 3C3 sau đó xây HTTP listener/runtime foundations cho WebSocket lifecycle. Phase 3D tiếp tục sở hữu access logging và integrated APISIX comparison.
+Phase 3C3 WebSocket lifecycle đã được triển khai trước Phase 3C2 theo [design riêng](2026-07-31-phase-3c3-websocket-lifecycle-design.md); developer-machine evidence được ghi tại [Phase 3C3 current status](../../benchmarks/phase-3c3-current-status.md). Phase 3C2 tiếp theo nhận generic immutable `Certificate` resources và xây downstream exact/wildcard SNI selection/rotation trên provider seam hiện có. Phase 3D tiếp tục sở hữu access logging và integrated APISIX comparison.
 
-Không coi Phase 3C1 developer-machine evidence là APISIX parity hoặc production certification.
+Không coi Phase 3C1 hoặc Phase 3C3 developer-machine evidence là APISIX parity hoặc production certification.

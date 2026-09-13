@@ -9,6 +9,7 @@ import (
 // CertificateProvider supplies an immutable certificate for one TLS client
 // hello.
 type CertificateProvider interface {
+	// GetCertificate returns the immutable certificate for one TLS client hello.
 	GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error)
 }
 

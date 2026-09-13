@@ -1,0 +1,115 @@
+api_version: gateway/v1alpha6
+
+runtime:
+  max_retired_snapshots: 64
+  health:
+    workers: 16
+    ready_queue_capacity: 4096
+
+listeners:
+  http:
+    address: ":8080"
+  https:
+    address: ":8443"
+    certificate_file: /certs/server.crt
+    private_key_file: /certs/server.key
+  admin:
+    address: ":9090"
+
+server:
+  read_header_timeout: 5s
+  idle_timeout: 60s
+  shutdown_timeout: 30s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 67108864
+
+telemetry:
+  request_metrics_enabled: true
+  profiling_enabled: false
+
+trust_bundles:
+  - id: internal-ca
+    ca_file: /secrets/internal-ca.pem
+
+certificates: []
+
+routes:
+  - id: realtime-default
+    priority: 100
+    match:
+      path: /websocket/echo
+      methods: [GET]
+    service_ref: realtime
+  - id: realtime-unbounded-idle
+    priority: 90
+    match:
+      path: /websocket/unbounded
+      methods: [GET]
+    service_ref: realtime
+    websocket:
+      idle_timeout: 0
+  - id: local-clear-websocket
+    priority: 80
+    match:
+      path: /local/websocket/echo
+      methods: [GET]
+    upstream_ref: local-clear
+    websocket:
+      enabled: true
+      idle_timeout: 60s
+
+services:
+  - id: realtime
+    upstream_ref: realtime-tls
+    websocket:
+      enabled: true
+      idle_timeout: 60s
+
+upstreams:
+  - id: realtime-tls
+    endpoints:
+      - url: https://realtime.internal:8443
+        weight: 1
+    balancer:
+      type: weighted_round_robin
+    health: {}
+    retry:
+      max_attempts: 2
+      methods: [GET]
+      retry_on:
+        connect_failure: true
+        connection_failure: true
+        response_header_timeout: true
+      budget:
+        ratio_per_1000: 1000
+        burst: 10
+        max_inflight: 32
+      total_timeout: 10s
+    transport:
+      protocol: auto
+      tls:
+        trust_bundle_ref: internal-ca
+        server_name: realtime.internal
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 256
+      max_idle_connections_per_host: 64
+  - id: local-clear
+    endpoints:
+      - url: http://127.0.0.1:8081
+        weight: 1
+    balancer:
+      type: weighted_round_robin
+    health: {}
+    retry:
+      max_attempts: 1
+      methods: [GET]
+      total_timeout: 0
+    transport:
+      protocol: auto
+      dial_timeout: 3s
+      response_header_timeout: 10s
+      idle_connection_timeout: 90s
+      max_idle_connections: 256
+      max_idle_connections_per_host: 64
