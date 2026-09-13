@@ -60,15 +60,20 @@ func (controller *webSocketCommitController) canContinue(requestCtx context.Cont
 		(controller.totalDeadline.IsZero() || time.Now().Before(controller.totalDeadline))
 }
 
-func (controller *webSocketCommitController) setPending(connection net.Conn, requestCtx context.Context) bool {
+func (controller *webSocketCommitController) setPending(connection net.Conn, requestCtx context.Context) (bool, error) {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
 	if !controller.canceledAt.IsZero() || controller.tunnelCtx.Err() != nil || requestCtx.Err() != nil ||
 		(!controller.totalDeadline.IsZero() && !time.Now().Before(controller.totalDeadline)) {
-		return false
+		return false, nil
+	}
+	if !controller.totalDeadline.IsZero() {
+		if err := connection.SetWriteDeadline(controller.totalDeadline); err != nil {
+			return false, err
+		}
 	}
 	controller.pending = connection
-	return true
+	return true, nil
 }
 
 func (controller *webSocketCommitController) finishCommit(flushedAt time.Time) bool {

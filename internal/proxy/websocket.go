@@ -164,7 +164,14 @@ func (h *handler) serveWebSocket(
 		h.observeWebSocket("upstream_failure")
 		return
 	}
-	if !commitController.setPending(connection, request.Context()) {
+	pending, err := commitController.setPending(connection, request.Context())
+	if err != nil {
+		session.ForceClose(tunnel.ReasonIOError)
+		lease.Release()
+		h.observeWebSocket("upstream_failure")
+		return
+	}
+	if !pending {
 		session.ForceClose(tunnel.ReasonShutdown)
 		lease.Release()
 		h.observeWebSocket("upstream_failure")
@@ -192,13 +199,6 @@ func (h *handler) serveWebSocket(
 	handshakeResponse.Body = nil
 	handshakeResponse.ContentLength = 0
 	handshakeResponse.TransferEncoding = nil
-	if !totalDeadline.IsZero() {
-		if err := connection.SetWriteDeadline(totalDeadline); err != nil {
-			session.ForceClose(tunnel.ReasonIOError)
-			registration.Rollback()
-			return
-		}
-	}
 	if err := handshakeResponse.Write(buffered); err != nil {
 		session.ForceClose(tunnel.ReasonIOError)
 		registration.Rollback()

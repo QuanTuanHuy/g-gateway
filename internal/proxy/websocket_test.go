@@ -281,7 +281,11 @@ func TestWebSocketCommitWinsCancellationAfterSuccessfulFlush(t *testing.T) {
 	defer cancel()
 	connection := &deadlineRecordingConn{}
 	controller := newWebSocketCommitController(tunnelCtx, cancel, time.Time{})
-	if !controller.setPending(connection, context.Background()) {
+	pending, err := controller.setPending(connection, context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
 		t.Fatal("setPending() = false")
 	}
 
@@ -295,6 +299,30 @@ func TestWebSocketCommitWinsCancellationAfterSuccessfulFlush(t *testing.T) {
 	}
 	if deadline := connection.deadline(); !deadline.IsZero() {
 		t.Fatalf("write deadline = %v, want cleared", deadline)
+	}
+}
+
+func TestWebSocketPendingCancellationKeepsEarlierWriteDeadline(t *testing.T) {
+	tunnelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	connection := &deadlineRecordingConn{}
+	totalDeadline := time.Now().Add(time.Minute)
+	controller := newWebSocketCommitController(tunnelCtx, cancel, totalDeadline)
+	pending, err := controller.setPending(connection, context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("setPending() = false")
+	}
+	if deadline := connection.deadline(); !deadline.Equal(totalDeadline) {
+		t.Fatalf("initial write deadline = %v, want %v", deadline, totalDeadline)
+	}
+
+	canceledAt := time.Now()
+	controller.cancelAt(canceledAt)
+	if deadline := connection.deadline(); !deadline.Equal(canceledAt) {
+		t.Fatalf("canceled write deadline = %v, want %v", deadline, canceledAt)
 	}
 }
 
