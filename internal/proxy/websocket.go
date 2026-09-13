@@ -54,13 +54,18 @@ func (h *handler) serveWebSocket(
 
 	tunnelCtx, cancel := context.WithCancel(context.Background())
 	var commitMu sync.Mutex
-	commitStarted := false
+	handshakeCommitted := false
+	var pendingSession *tunnel.Session
 	cancelBeforeCommit := func() {
 		commitMu.Lock()
-		if !commitStarted {
+		if !handshakeCommitted {
 			cancel()
 		}
+		session := pendingSession
 		commitMu.Unlock()
+		if session != nil {
+			session.ForceClose(tunnel.ReasonShutdown)
+		}
 	}
 	stopClientLink := context.AfterFunc(request.Context(), cancelBeforeCommit)
 	totalTimeout := state.Runtime.RetryPolicy().TotalTimeout
@@ -70,14 +75,21 @@ func (h *handler) serveWebSocket(
 		totalDeadline = time.Now().Add(totalTimeout)
 		timer = time.AfterFunc(totalTimeout, cancelBeforeCommit)
 	}
-	reserveCommit := func() bool {
+	canContinueCommit := func() bool {
+		commitMu.Lock()
+		defer commitMu.Unlock()
+		return tunnelCtx.Err() == nil && request.Context().Err() == nil &&
+			(totalDeadline.IsZero() || time.Now().Before(totalDeadline))
+	}
+	finishCommit := func() bool {
 		commitMu.Lock()
 		defer commitMu.Unlock()
 		if tunnelCtx.Err() != nil || request.Context().Err() != nil ||
 			(!totalDeadline.IsZero() && !time.Now().Before(totalDeadline)) {
 			return false
 		}
-		commitStarted = true
+		handshakeCommitted = true
+		pendingSession = nil
 		return true
 	}
 	committed := false
@@ -140,17 +152,13 @@ func (h *handler) serveWebSocket(
 		h.writeMatchedErrorWithoutHooks(writer, state, http.StatusInternalServerError, "PLUGIN_RESPONSE_FAILED", "response plugin failed")
 		return
 	}
-	if !reserveCommit() {
+	if !canContinueCommit() {
 		_ = response.Body.Close()
 		h.observeWebSocket("upstream_failure")
 		if request.Context().Err() == nil {
 			h.writeMatchedErrorWithoutHooks(writer, state, http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "upstream timeout")
 		}
 		return
-	}
-	stopClientLink()
-	if timer != nil {
-		timer.Stop()
 	}
 	lease, err := result.Selection.AcquireTunnelLease()
 	if err != nil {
@@ -185,6 +193,17 @@ func (h *handler) serveWebSocket(
 		h.observeWebSocket("upstream_failure")
 		return
 	}
+	commitMu.Lock()
+	pendingSession = session
+	canceledBeforeRegistration := tunnelCtx.Err() != nil || request.Context().Err() != nil ||
+		(!totalDeadline.IsZero() && !time.Now().Before(totalDeadline))
+	commitMu.Unlock()
+	if canceledBeforeRegistration {
+		session.ForceClose(tunnel.ReasonShutdown)
+		lease.Release()
+		h.observeWebSocket("upstream_failure")
+		return
+	}
 	if h.tunnels == nil {
 		h.observeWebSocket("draining")
 		_ = writeHijackedErrorBounded(tunnelCtx, connection, buffered, state, http.StatusServiceUnavailable, "GATEWAY_DRAINING", "gateway draining")
@@ -207,6 +226,13 @@ func (h *handler) serveWebSocket(
 	handshakeResponse.Body = nil
 	handshakeResponse.ContentLength = 0
 	handshakeResponse.TransferEncoding = nil
+	if !totalDeadline.IsZero() {
+		if err := connection.SetWriteDeadline(totalDeadline); err != nil {
+			session.ForceClose(tunnel.ReasonIOError)
+			registration.Rollback()
+			return
+		}
+	}
 	if err := handshakeResponse.Write(buffered); err != nil {
 		session.ForceClose(tunnel.ReasonIOError)
 		registration.Rollback()
@@ -217,6 +243,17 @@ func (h *handler) serveWebSocket(
 		registration.Rollback()
 		return
 	}
+	if !finishCommit() {
+		session.ForceClose(tunnel.ReasonShutdown)
+		registration.Rollback()
+		h.observeWebSocket("upstream_failure")
+		return
+	}
+	stopClientLink()
+	if timer != nil {
+		timer.Stop()
+	}
+	_ = connection.SetWriteDeadline(time.Time{})
 	state.ResponseCode = http.StatusSwitchingProtocols
 	if !registration.Activate(tunnelCtx) {
 		session.ForceClose(tunnel.ReasonShutdown)

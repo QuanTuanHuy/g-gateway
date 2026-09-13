@@ -235,11 +235,75 @@ func TestWebSocketTimeoutDuringResponsePluginPrevents101Commit(t *testing.T) {
 	}
 }
 
+func TestWebSocketTimeoutUnblocksPending101Flush(t *testing.T) {
+	upstreamServer := newUpgradeTestServer(t, "", nil)
+	resources := webSocketResources(upstreamServer.URL, true)
+	resources.Upstreams[0].Retry.TotalTimeout = 30 * time.Millisecond
+	resources.Routes[0].Plugins = []model.PluginAttachment{{Name: "large-response", Enabled: true, RawConfig: json.RawMessage(`{}`)}}
+	plugins, err := plugin.NewRegistry(plugin.Definition{
+		Name: "large-response", Version: "v1", RequestOrder: 1, ResponseOrder: 1,
+		Compile: func(json.RawMessage) (plugin.CompiledPlugin, error) {
+			return plugin.CompiledPlugin{Response: largeResponseHook{}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, manager, tunnels, observer := newWebSocketTestHandlerWithPlugins(t, resources, plugins)
+	serverConnection, clientConnection := net.Pipe()
+	defer clientConnection.Close()
+	writer := &blockingHijackWriter{
+		header:     make(http.Header),
+		connection: serverConnection,
+		buffered:   bufio.NewReadWriter(bufio.NewReader(serverConnection), bufio.NewWriter(serverConnection)),
+	}
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(writer, validProxyWebSocketRequest())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pending 101 flush outlived total timeout")
+	}
+	waitForTunnelStats(t, tunnels, tunnel.Stats{})
+	if got := manager.UpstreamStats().LiveTunnelLeases; got != 0 {
+		t.Fatalf("live tunnel leases=%d", got)
+	}
+	if observer.saw("success") {
+		t.Fatalf("blocked handshake recorded success: %v", observer.results())
+	}
+}
+
 type delayedResponseHook struct{ delay time.Duration }
 
 func (hook delayedResponseHook) OnResponse(*requestctx.Context, *http.Response) error {
 	time.Sleep(hook.delay)
 	return nil
+}
+
+type largeResponseHook struct{}
+
+func (largeResponseHook) OnResponse(_ *requestctx.Context, response *http.Response) error {
+	response.Header.Set("X-Large", strings.Repeat("x", 1<<20))
+	return nil
+}
+
+type blockingHijackWriter struct {
+	header     http.Header
+	connection net.Conn
+	buffered   *bufio.ReadWriter
+}
+
+func (writer *blockingHijackWriter) Header() http.Header { return writer.header }
+
+func (writer *blockingHijackWriter) WriteHeader(int) {}
+
+func (writer *blockingHijackWriter) Write(payload []byte) (int, error) { return len(payload), nil }
+
+func (writer *blockingHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return writer.connection, writer.buffered, nil
 }
 
 func TestWebSocketClosedAdmissionReturns503(t *testing.T) {

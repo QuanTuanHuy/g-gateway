@@ -73,15 +73,16 @@ type Session struct {
 	upstream   Endpoint
 	idle       time.Duration
 
-	started      atomic.Bool
-	down         atomic.Uint64
-	up           atomic.Uint64
-	lastActivity atomic.Int64
+	started atomic.Bool
+	down    atomic.Uint64
+	up      atomic.Uint64
 
-	activity  chan struct{}
-	closeOnce sync.Once
-	reasonMu  sync.Mutex
-	reason    CloseReason
+	activity     chan struct{}
+	activityMu   sync.Mutex
+	lastActivity time.Time
+	closeOnce    sync.Once
+	reasonMu     sync.Mutex
+	reason       CloseReason
 }
 
 type copyOutcome struct {
@@ -118,7 +119,7 @@ func (s *Session) Run(ctx context.Context) Result {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	s.lastActivity.Store(startedAt.UnixNano())
+	s.recordActivity(startedAt)
 	outcomes := make(chan copyOutcome, 2)
 	go s.copy(DirectionDownstreamToUpstream, s.downstream.Reader, s.upstream.Writer, s.upstream.CloseWriter, &s.down, outcomes)
 	go s.copy(DirectionUpstreamToDownstream, s.upstream.Reader, s.downstream.Writer, s.downstream.CloseWriter, &s.up, outcomes)
@@ -155,7 +156,7 @@ func (s *Session) Run(ctx context.Context) Result {
 				timer.Reset(s.idle)
 			}
 		case <-idle:
-			remaining := s.idle - time.Since(time.Unix(0, s.lastActivity.Load()))
+			remaining := s.idle - time.Since(s.activityTime())
 			if remaining > 0 {
 				timer.Reset(remaining)
 				idle = timer.C
@@ -242,11 +243,23 @@ func (s *Session) copy(
 }
 
 func (s *Session) signalActivity() {
-	s.lastActivity.Store(time.Now().UnixNano())
+	s.recordActivity(time.Now())
 	select {
 	case s.activity <- struct{}{}:
 	default:
 	}
+}
+
+func (s *Session) recordActivity(at time.Time) {
+	s.activityMu.Lock()
+	s.lastActivity = at
+	s.activityMu.Unlock()
+}
+
+func (s *Session) activityTime() time.Time {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	return s.lastActivity
 }
 
 func (s *Session) closeEndpoints() {

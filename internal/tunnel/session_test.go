@@ -63,11 +63,11 @@ func TestSessionRecordsActivityWhenNotificationIsAlreadyPending(t *testing.T) {
 	defer upstream.Close()
 	session.activity <- struct{}{}
 	session.signalActivity()
-	first := session.lastActivity.Load()
+	first := session.activityTime()
 	time.Sleep(time.Millisecond)
 	session.signalActivity()
-	if second := session.lastActivity.Load(); second <= first {
-		t.Fatalf("last activity did not advance: first=%d second=%d", first, second)
+	if second := session.activityTime(); !second.After(first) {
+		t.Fatalf("last activity did not advance: first=%s second=%s", first, second)
 	}
 }
 
