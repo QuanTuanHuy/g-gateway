@@ -326,6 +326,26 @@ func TestWebSocketPendingCancellationKeepsEarlierWriteDeadline(t *testing.T) {
 	}
 }
 
+func TestWebSocketLateTimeoutCallbackDoesNotExtendWriteDeadline(t *testing.T) {
+	tunnelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	connection := &deadlineRecordingConn{}
+	totalDeadline := time.Now().Add(time.Minute)
+	controller := newWebSocketCommitController(tunnelCtx, cancel, totalDeadline)
+	pending, err := controller.setPending(connection, context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("setPending() = false")
+	}
+
+	controller.cancelAt(totalDeadline.Add(time.Millisecond))
+	if deadline := connection.deadline(); !deadline.Equal(totalDeadline) {
+		t.Fatalf("late cancellation deadline = %v, want original %v", deadline, totalDeadline)
+	}
+}
+
 type delayedResponseHook struct{ delay time.Duration }
 
 func (hook delayedResponseHook) OnResponse(*requestctx.Context, *http.Response) error {

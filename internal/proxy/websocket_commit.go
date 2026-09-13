@@ -47,7 +47,11 @@ func (controller *webSocketCommitController) cancelAt(at time.Time) {
 		controller.canceledAt = at
 	}
 	if controller.pending != nil {
-		_ = controller.pending.SetWriteDeadline(at)
+		writeDeadline := at
+		if !controller.totalDeadline.IsZero() && controller.totalDeadline.Before(writeDeadline) {
+			writeDeadline = controller.totalDeadline
+		}
+		_ = controller.pending.SetWriteDeadline(writeDeadline)
 		return
 	}
 	controller.cancel()
