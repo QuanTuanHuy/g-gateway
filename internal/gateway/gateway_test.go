@@ -387,6 +387,53 @@ func TestGatewayTunnelAdmissionClosesWhenShutdownBegins(t *testing.T) {
 	}
 }
 
+func TestShutdownDeadlineClosesPendingTunnelBeforeWaitingForHandlers(t *testing.T) {
+	fixture := newGatewayFixture(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	if _, err := fixture.gateway.Start(); err != nil {
+		t.Fatal(err)
+	}
+	downstreamPeer, downstreamTunnel := net.Pipe()
+	upstreamTunnel, upstreamPeer := net.Pipe()
+	defer downstreamPeer.Close()
+	defer upstreamPeer.Close()
+	session, err := tunnel.NewSession(
+		tunnel.Endpoint{Reader: downstreamTunnel, Writer: downstreamTunnel, Closer: downstreamTunnel},
+		tunnel.Endpoint{Reader: upstreamTunnel, Writer: upstreamTunnel, Closer: upstreamTunnel},
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releases atomic.Int32
+	if _, err := fixture.gateway.tunnels.Register(session, func() { releases.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	fixture.gateway.trafficRequests.Add(1)
+	go func() {
+		defer fixture.gateway.trafficRequests.Done()
+		_, _ = downstreamTunnel.Read(make([]byte, 1))
+	}()
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		defer cancel()
+		done <- fixture.gateway.Shutdown(ctx)
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown() error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown() hung behind pending hijacked handler")
+	}
+	if releases.Load() != 1 || fixture.gateway.tunnels.Stats() != (tunnel.Stats{}) {
+		t.Fatalf("release=%d stats=%+v", releases.Load(), fixture.gateway.tunnels.Stats())
+	}
+}
+
 func TestShutdownFlipsReadinessBeforeDrain(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

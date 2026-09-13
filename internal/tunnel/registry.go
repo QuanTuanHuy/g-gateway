@@ -138,6 +138,7 @@ func (r *Registry) Drain(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 	for _, registration := range pending {
+		registration.session.ForceClose(ReasonShutdown)
 		registration.finish(false, Result{})
 	}
 	for _, session := range active {
@@ -168,15 +169,15 @@ func (r *Registry) Stats() Stats {
 
 // Activate commits a pending registration and starts its Session
 // asynchronously. It is safe to call after admission closes.
-func (r *Registration) Activate(ctx context.Context) {
+func (r *Registration) Activate(ctx context.Context) bool {
 	if r == nil || r.registry == nil {
-		return
+		return false
 	}
 	registry := r.registry
 	registry.mu.Lock()
 	if r.state != registrationPending {
 		registry.mu.Unlock()
-		return
+		return false
 	}
 	r.state = registrationActive
 	registry.mu.Unlock()
@@ -193,6 +194,7 @@ func (r *Registration) Activate(ctx context.Context) {
 		registry.mu.Unlock()
 		r.finish(true, result)
 	}()
+	return true
 }
 
 // Rollback releases a pending registration without running its Session.

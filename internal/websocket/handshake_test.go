@@ -47,12 +47,37 @@ func TestValidateRequestCapturesCanonicalHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := RequestHandshake{
-		Key:        testKey,
-		Protocols:  []string{"chat", "superchat"},
-		Extensions: []string{"permessage-deflate; client_max_window_bits", "x-example"},
+		Key:              testKey,
+		Protocols:        []string{"chat", "superchat"},
+		Extensions:       []string{"permessage-deflate; client_max_window_bits", "x-example"},
+		connectionTokens: []string{"keep-alive", "upgrade"},
+		upgradeTokens:    []string{"websocket"},
 	}
 	if !got.Equal(want) || !want.Equal(got) {
 		t.Fatalf("ValidateRequest() = %+v, want %+v", got, want)
+	}
+}
+
+func TestRequestHandshakeEqualDetectsControlTokenMutation(t *testing.T) {
+	base := validHandshakeRequest()
+	captured, err := ValidateRequest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"Connection": "Upgrade, close",
+		"Upgrade":    "websocket, h2c",
+	} {
+		mutated := base.Clone(base.Context())
+		mutated.Header = base.Header.Clone()
+		mutated.Header.Set(name, value)
+		got, err := ValidateRequest(mutated)
+		if err != nil {
+			t.Fatalf("%s mutation unexpectedly invalid: %v", name, err)
+		}
+		if captured.Equal(got) {
+			t.Fatalf("%s semantic mutation compared equal", name)
+		}
 	}
 }
 

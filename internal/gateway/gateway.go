@@ -350,8 +350,8 @@ func (g *Gateway) shutdown(ctx context.Context) error {
 		appendError(g.httpServer.Close())
 		appendError(g.httpsServer.Close())
 	}
-	g.trafficRequests.Wait()
 	appendError(g.tunnels.Drain(ctx))
+	g.trafficRequests.Wait()
 	managerCtx := ctx
 	var managerCancel context.CancelFunc
 	if ctx.Err() != nil {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
@@ -52,11 +53,32 @@ func (h *handler) serveWebSocket(
 	}
 
 	tunnelCtx, cancel := context.WithCancel(context.Background())
-	stopClientLink := context.AfterFunc(request.Context(), cancel)
+	var commitMu sync.Mutex
+	commitStarted := false
+	cancelBeforeCommit := func() {
+		commitMu.Lock()
+		if !commitStarted {
+			cancel()
+		}
+		commitMu.Unlock()
+	}
+	stopClientLink := context.AfterFunc(request.Context(), cancelBeforeCommit)
 	totalTimeout := state.Runtime.RetryPolicy().TotalTimeout
 	var timer *time.Timer
+	var totalDeadline time.Time
 	if totalTimeout > 0 {
-		timer = time.AfterFunc(totalTimeout, cancel)
+		totalDeadline = time.Now().Add(totalTimeout)
+		timer = time.AfterFunc(totalTimeout, cancelBeforeCommit)
+	}
+	reserveCommit := func() bool {
+		commitMu.Lock()
+		defer commitMu.Unlock()
+		if tunnelCtx.Err() != nil || request.Context().Err() != nil ||
+			(!totalDeadline.IsZero() && !time.Now().Before(totalDeadline)) {
+			return false
+		}
+		commitStarted = true
+		return true
 	}
 	committed := false
 	defer func() {
@@ -118,6 +140,18 @@ func (h *handler) serveWebSocket(
 		h.writeMatchedErrorWithoutHooks(writer, state, http.StatusInternalServerError, "PLUGIN_RESPONSE_FAILED", "response plugin failed")
 		return
 	}
+	if !reserveCommit() {
+		_ = response.Body.Close()
+		h.observeWebSocket("upstream_failure")
+		if request.Context().Err() == nil {
+			h.writeMatchedErrorWithoutHooks(writer, state, http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "upstream timeout")
+		}
+		return
+	}
+	stopClientLink()
+	if timer != nil {
+		timer.Stop()
+	}
 	lease, err := result.Selection.AcquireTunnelLease()
 	if err != nil {
 		_ = response.Body.Close()
@@ -153,7 +187,7 @@ func (h *handler) serveWebSocket(
 	}
 	if h.tunnels == nil {
 		h.observeWebSocket("draining")
-		_ = writeHijackedError(buffered, state, http.StatusServiceUnavailable, "GATEWAY_DRAINING", "gateway draining")
+		_ = writeHijackedErrorBounded(tunnelCtx, connection, buffered, state, http.StatusServiceUnavailable, "GATEWAY_DRAINING", "gateway draining")
 		session.ForceClose(tunnel.ReasonShutdown)
 		lease.Release()
 		return
@@ -164,7 +198,7 @@ func (h *handler) serveWebSocket(
 	})
 	if err != nil {
 		h.observeWebSocket("draining")
-		_ = writeHijackedError(buffered, state, http.StatusServiceUnavailable, "GATEWAY_DRAINING", "gateway draining")
+		_ = writeHijackedErrorBounded(tunnelCtx, connection, buffered, state, http.StatusServiceUnavailable, "GATEWAY_DRAINING", "gateway draining")
 		session.ForceClose(tunnel.ReasonShutdown)
 		lease.Release()
 		return
@@ -183,12 +217,12 @@ func (h *handler) serveWebSocket(
 		registration.Rollback()
 		return
 	}
-	stopClientLink()
-	if timer != nil {
-		timer.Stop()
-	}
 	state.ResponseCode = http.StatusSwitchingProtocols
-	registration.Activate(tunnelCtx)
+	if !registration.Activate(tunnelCtx) {
+		session.ForceClose(tunnel.ReasonShutdown)
+		h.observeWebSocket("draining")
+		return
+	}
 	h.observeWebSocket("success")
 	committed = true
 }
@@ -229,6 +263,11 @@ func (h *handler) handleForwardResponseError(writer http.ResponseWriter, request
 		h.writeMatchedErrorWithoutHooks(writer, state, http.StatusInternalServerError, "PLUGIN_RESPONSE_FAILED", "response plugin failed")
 		return
 	}
+	var streamErr *responseStreamError
+	if errors.As(err, &streamErr) {
+		state.ResponseError = "UPSTREAM_RESPONSE_STREAM_FAILED"
+		return
+	}
 	h.handleProxyError(writer, request, err)
 }
 
@@ -258,6 +297,30 @@ func upstreamEndpoint(stream io.ReadWriteCloser) tunnel.Endpoint {
 		endpoint.CloseWriter = closeWriter.CloseWrite
 	}
 	return endpoint
+}
+
+func writeHijackedErrorBounded(
+	ctx context.Context,
+	connection net.Conn,
+	buffered *bufio.ReadWriter,
+	state *requestctx.Context,
+	status int,
+	code, message string,
+) error {
+	deadline := time.Now().Add(100 * time.Millisecond)
+	if ctx != nil {
+		if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+			deadline = contextDeadline
+		}
+		if ctx.Err() != nil {
+			deadline = time.Now()
+		}
+	}
+	if err := connection.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	defer connection.SetWriteDeadline(time.Time{})
+	return writeHijackedError(buffered, state, status, code, message)
 }
 
 func writeHijackedError(buffered *bufio.ReadWriter, state *requestctx.Context, status int, code, message string) error {

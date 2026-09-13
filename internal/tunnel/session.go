@@ -73,9 +73,10 @@ type Session struct {
 	upstream   Endpoint
 	idle       time.Duration
 
-	started atomic.Bool
-	down    atomic.Uint64
-	up      atomic.Uint64
+	started      atomic.Bool
+	down         atomic.Uint64
+	up           atomic.Uint64
+	lastActivity atomic.Int64
 
 	activity  chan struct{}
 	closeOnce sync.Once
@@ -117,6 +118,7 @@ func (s *Session) Run(ctx context.Context) Result {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.lastActivity.Store(startedAt.UnixNano())
 	outcomes := make(chan copyOutcome, 2)
 	go s.copy(DirectionDownstreamToUpstream, s.downstream.Reader, s.upstream.Writer, s.upstream.CloseWriter, &s.down, outcomes)
 	go s.copy(DirectionUpstreamToDownstream, s.upstream.Reader, s.downstream.Writer, s.downstream.CloseWriter, &s.up, outcomes)
@@ -153,9 +155,15 @@ func (s *Session) Run(ctx context.Context) Result {
 				timer.Reset(s.idle)
 			}
 		case <-idle:
-			s.setReason(ReasonIdleTimeout)
-			s.closeEndpoints()
-			idle = nil
+			remaining := s.idle - time.Since(time.Unix(0, s.lastActivity.Load()))
+			if remaining > 0 {
+				timer.Reset(remaining)
+				idle = timer.C
+			} else {
+				s.setReason(ReasonIdleTimeout)
+				s.closeEndpoints()
+				idle = nil
+			}
 		case <-contextDone:
 			s.setReason(ReasonShutdown)
 			s.closeEndpoints()
@@ -234,6 +242,7 @@ func (s *Session) copy(
 }
 
 func (s *Session) signalActivity() {
+	s.lastActivity.Store(time.Now().UnixNano())
 	select {
 	case s.activity <- struct{}{}:
 	default:
@@ -249,10 +258,15 @@ func (s *Session) closeEndpoints() {
 
 func (s *Session) setReason(reason CloseReason) {
 	s.reasonMu.Lock()
-	if reasonPriority(reason) > reasonPriority(s.reason) {
+	if s.reason == "" || isControllerReason(reason) &&
+		(!isControllerReason(s.reason) || reasonPriority(reason) > reasonPriority(s.reason)) {
 		s.reason = reason
 	}
 	s.reasonMu.Unlock()
+}
+
+func isControllerReason(reason CloseReason) bool {
+	return reason == ReasonShutdown || reason == ReasonIdleTimeout
 }
 
 func (s *Session) currentReason() CloseReason {
@@ -267,10 +281,6 @@ func reasonPriority(reason CloseReason) int {
 		return 5
 	case ReasonIdleTimeout:
 		return 4
-	case ReasonIOError:
-		return 3
-	case ReasonClientEOF, ReasonUpstreamEOF:
-		return 2
 	default:
 		return 0
 	}

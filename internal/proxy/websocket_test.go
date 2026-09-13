@@ -95,17 +95,23 @@ func TestWebSocketMalformedEnabledCandidateReturns400(t *testing.T) {
 }
 
 func TestWebSocketRequestPluginCannotMutateHandshakeControls(t *testing.T) {
-	resources := webSocketResources("http://127.0.0.1:1", true)
-	resources.Routes[0].Plugins = []model.PluginAttachment{{
-		Name: "header-rewrite", Enabled: true,
-		RawConfig: json.RawMessage(`{"request":{"set":{"Sec-WebSocket-Key":"AAAAAAAAAAAAAAAAAAAAAA=="}}}`),
-	}}
-	handler, _, _, observer := newWebSocketTestHandler(t, resources)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, validProxyWebSocketRequest())
-	assertErrorResponse(t, response, http.StatusInternalServerError, "PLUGIN_REQUEST_FAILED", "request plugin failed")
-	if !observer.saw("plugin_failure") {
-		t.Fatalf("handshake results = %v", observer.results())
+	mutations := []string{
+		`{"request":{"set":{"Sec-WebSocket-Key":"AAAAAAAAAAAAAAAAAAAAAA=="}}}`,
+		`{"request":{"set":{"Sec-WebSocket-Version":"13, 13"}}}`,
+	}
+	for _, mutation := range mutations {
+		resources := webSocketResources("http://127.0.0.1:1", true)
+		resources.Routes[0].Plugins = []model.PluginAttachment{{
+			Name: "header-rewrite", Enabled: true,
+			RawConfig: json.RawMessage(mutation),
+		}}
+		handler, _, _, observer := newWebSocketTestHandler(t, resources)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, validProxyWebSocketRequest())
+		assertErrorResponse(t, response, http.StatusInternalServerError, "PLUGIN_REQUEST_FAILED", "request plugin failed")
+		if !observer.saw("plugin_failure") {
+			t.Fatalf("mutation=%s handshake results=%v", mutation, observer.results())
+		}
 	}
 }
 
@@ -202,6 +208,40 @@ func TestWebSocketResponsePluginCannotMutateHandshakeControls(t *testing.T) {
 	}
 }
 
+func TestWebSocketTimeoutDuringResponsePluginPrevents101Commit(t *testing.T) {
+	upstreamServer := newUpgradeTestServer(t, "", nil)
+	resources := webSocketResources(upstreamServer.URL, true)
+	resources.Upstreams[0].Retry.TotalTimeout = 20 * time.Millisecond
+	resources.Routes[0].Plugins = []model.PluginAttachment{{Name: "slow-response", Enabled: true, RawConfig: json.RawMessage(`{}`)}}
+	plugins, err := plugin.NewRegistry(plugin.Definition{
+		Name: "slow-response", Version: "v1", RequestOrder: 1, ResponseOrder: 1,
+		Compile: func(json.RawMessage) (plugin.CompiledPlugin, error) {
+			return plugin.CompiledPlugin{Response: delayedResponseHook{delay: 50 * time.Millisecond}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, _, _, observer := newWebSocketTestHandlerWithPlugins(t, resources, plugins)
+	gateway := httptest.NewServer(requestctx.Middleware(handler))
+	defer gateway.Close()
+	connection, _, response := dialTestWebSocket(t, gateway.Listener.Addr().String())
+	defer connection.Close()
+	if response.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status=%d, want 504", response.StatusCode)
+	}
+	if observer.saw("success") {
+		t.Fatalf("timed-out handshake recorded success: %v", observer.results())
+	}
+}
+
+type delayedResponseHook struct{ delay time.Duration }
+
+func (hook delayedResponseHook) OnResponse(*requestctx.Context, *http.Response) error {
+	time.Sleep(hook.delay)
+	return nil
+}
+
 func TestWebSocketClosedAdmissionReturns503(t *testing.T) {
 	upstreamServer := newUpgradeTestServer(t, "", nil)
 	handler, _, tunnels, observer := newWebSocketTestHandler(t, webSocketResources(upstreamServer.URL, true))
@@ -215,6 +255,23 @@ func TestWebSocketClosedAdmissionReturns503(t *testing.T) {
 	}
 	if !observer.saw("draining") {
 		t.Fatalf("handshake results = %v", observer.results())
+	}
+}
+
+func TestWriteHijackedErrorIsBoundedWhenClientStopsReading(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	buffered := bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- writeHijackedErrorBounded(ctx, server, buffered, &requestctx.Context{}, http.StatusServiceUnavailable, "GATEWAY_DRAINING", "gateway draining")
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("hijacked error write ignored canceled context")
 	}
 }
 
@@ -255,11 +312,16 @@ func webSocketResources(endpoint string, enabled bool) model.ResourceSet {
 
 func newWebSocketTestHandler(t testing.TB, resources model.ResourceSet) (http.Handler, *gatewayruntime.Manager, *tunnel.Registry, *recordingWebSocketObserver) {
 	t.Helper()
-	upstreamRegistry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
+	plugins, err := plugin.NewBuiltinRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	plugins, err := plugin.NewBuiltinRegistry()
+	return newWebSocketTestHandlerWithPlugins(t, resources, plugins)
+}
+
+func newWebSocketTestHandlerWithPlugins(t testing.TB, resources model.ResourceSet, plugins *plugin.Registry) (http.Handler, *gatewayruntime.Manager, *tunnel.Registry, *recordingWebSocketObserver) {
+	t.Helper()
+	upstreamRegistry, err := upstream.NewRegistry(upstream.RegistryOptions{MaxRetiredSnapshots: 64, HealthWorkers: 2, HealthQueueCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}

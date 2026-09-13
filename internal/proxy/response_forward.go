@@ -8,6 +8,12 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 )
 
+type responseStreamError struct{ err error }
+
+func (e *responseStreamError) Error() string { return e.err.Error() }
+
+func (e *responseStreamError) Unwrap() error { return e.err }
+
 func (h *handler) forwardResponse(
 	writer http.ResponseWriter,
 	request *http.Request,
@@ -35,7 +41,7 @@ func (h *handler) forwardResponse(
 	state.ResponseCode = status
 	writer.WriteHeader(status)
 	if _, err := io.Copy(writer, response.Body); err != nil {
-		return err
+		return &responseStreamError{err: err}
 	}
 	for name, values := range response.Trailer {
 		writer.Header()[name] = append([]string(nil), values...)

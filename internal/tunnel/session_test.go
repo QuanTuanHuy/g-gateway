@@ -57,6 +57,20 @@ func TestSessionActivityInEitherDirectionResetsIdleTimeout(t *testing.T) {
 	_ = upstream.Close()
 }
 
+func TestSessionRecordsActivityWhenNotificationIsAlreadyPending(t *testing.T) {
+	session, downstream, upstream := pipeSession(t, time.Second)
+	defer downstream.Close()
+	defer upstream.Close()
+	session.activity <- struct{}{}
+	session.signalActivity()
+	first := session.lastActivity.Load()
+	time.Sleep(time.Millisecond)
+	session.signalActivity()
+	if second := session.lastActivity.Load(); second <= first {
+		t.Fatalf("last activity did not advance: first=%d second=%d", first, second)
+	}
+}
+
 func TestSessionZeroIdleTimeoutNeverExpires(t *testing.T) {
 	session, downstream, upstream := pipeSession(t, 0)
 	result := make(chan Result, 1)
@@ -121,6 +135,25 @@ func TestSessionConcurrentForceCloseIsIdempotent(t *testing.T) {
 	}
 	_ = downstream.Close()
 	_ = upstream.Close()
+}
+
+func TestSessionPreservesFirstCausalStreamReason(t *testing.T) {
+	firstEOF := new(Session)
+	firstEOF.setReason(ReasonClientEOF)
+	firstEOF.setReason(ReasonIOError)
+	if got := firstEOF.currentReason(); got != ReasonClientEOF {
+		t.Fatalf("EOF then error reason=%q", got)
+	}
+	firstError := new(Session)
+	firstError.setReason(ReasonIOError)
+	firstError.setReason(ReasonUpstreamEOF)
+	if got := firstError.currentReason(); got != ReasonIOError {
+		t.Fatalf("error then EOF reason=%q", got)
+	}
+	firstError.setReason(ReasonShutdown)
+	if got := firstError.currentReason(); got != ReasonShutdown {
+		t.Fatalf("controller reason=%q", got)
+	}
 }
 
 func TestSessionRejectsInvalidEndpointsAndTimeout(t *testing.T) {

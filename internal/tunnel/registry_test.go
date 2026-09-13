@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,7 +135,8 @@ func TestRegistryDrainDeadlineRollsBackPendingAndForceClosesActive(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := registry.Register(pending, func() { releases.Add(1) }); err != nil {
+	pendingRegistration, err := registry.Register(pending, func() { releases.Add(1) })
+	if err != nil {
 		t.Fatal(err)
 	}
 	activeRegistration.Activate(context.Background())
@@ -147,10 +149,23 @@ func TestRegistryDrainDeadlineRollsBackPendingAndForceClosesActive(t *testing.T)
 	if releases.Load() != 2 || registry.Stats() != (Stats{}) {
 		t.Fatalf("release=%d stats=%+v", releases.Load(), registry.Stats())
 	}
+	if pendingRegistration.Activate(context.Background()) {
+		t.Fatal("Activate() succeeded after deadline rollback")
+	}
+	assertConnectionClosed(t, pendingDownstream)
+	assertConnectionClosed(t, pendingUpstream)
 	observer.mu.Lock()
 	defer observer.mu.Unlock()
 	if observer.last.Reason != ReasonShutdown {
 		t.Fatalf("active close reason = %q", observer.last.Reason)
+	}
+}
+
+func assertConnectionClosed(t *testing.T, connection net.Conn) {
+	t.Helper()
+	_ = connection.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := connection.Read(make([]byte, 1)); err == nil {
+		t.Fatal("peer remained open")
 	}
 }
 

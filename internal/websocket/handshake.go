@@ -22,7 +22,9 @@ type RequestHandshake struct {
 	// Protocols contains offered subprotocols in wire order.
 	Protocols []string
 	// Extensions contains offered extension values in wire order.
-	Extensions []string
+	Extensions       []string
+	connectionTokens []string
+	upgradeTokens    []string
 }
 
 // ResponseHandshake contains validated upstream negotiation semantics.
@@ -61,6 +63,14 @@ func ValidateRequest(request *http.Request) (RequestHandshake, error) {
 	if !hasToken(request.Header.Values("Upgrade"), "websocket") {
 		return RequestHandshake{}, invalid("request upgrade")
 	}
+	connectionTokens, ok := semanticTokens(request.Header.Values("Connection"))
+	if !ok {
+		return RequestHandshake{}, invalid("request connection")
+	}
+	upgradeTokens, ok := semanticTokens(request.Header.Values("Upgrade"))
+	if !ok {
+		return RequestHandshake{}, invalid("request upgrade")
+	}
 	versions, ok := commaValues(request.Header.Values("Sec-WebSocket-Version"), true)
 	if !ok || len(versions) != 1 || versions[0] != "13" {
 		return RequestHandshake{}, invalid("request version")
@@ -89,13 +99,19 @@ func ValidateRequest(request *http.Request) (RequestHandshake, error) {
 	if !ok {
 		return RequestHandshake{}, invalid("request extensions")
 	}
-	return RequestHandshake{Key: keys[0], Protocols: protocols, Extensions: extensions}, nil
+	return RequestHandshake{
+		Key: keys[0], Protocols: protocols, Extensions: extensions,
+		connectionTokens: connectionTokens, upgradeTokens: upgradeTokens,
+	}, nil
 }
 
 // Equal reports whether two captured request handshakes have identical
 // semantics.
 func (h RequestHandshake) Equal(other RequestHandshake) bool {
-	return h.Key == other.Key && slices.Equal(h.Protocols, other.Protocols) && slices.Equal(h.Extensions, other.Extensions)
+	return h.Key == other.Key && slices.Equal(h.Protocols, other.Protocols) &&
+		slices.Equal(h.Extensions, other.Extensions) &&
+		slices.Equal(h.connectionTokens, other.connectionTokens) &&
+		slices.Equal(h.upgradeTokens, other.upgradeTokens)
 }
 
 // CanonicalizeRequestHeaders removes hop-by-hop fields and restores only the
@@ -221,6 +237,25 @@ func hasToken(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func semanticTokens(values []string) ([]string, bool) {
+	var tokens []string
+	for _, value := range values {
+		for _, raw := range strings.Split(value, ",") {
+			token := strings.TrimSpace(raw)
+			if token == "" || !validToken(token) {
+				return nil, false
+			}
+			tokens = append(tokens, strings.ToLower(token))
+		}
+	}
+	if len(tokens) == 0 {
+		return nil, false
+	}
+	slices.Sort(tokens)
+	tokens = slices.Compact(tokens)
+	return tokens, true
 }
 
 func commaValues(values []string, tokensOnly bool) ([]string, bool) {
