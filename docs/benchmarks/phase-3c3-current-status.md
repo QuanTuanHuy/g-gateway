@@ -13,8 +13,8 @@ Evidence below was observed on Windows/amd64, Go 1.26.5, Intel Core i7-12700H on
 - Request fuzz: `go test ./internal/websocket -run '^$' -fuzz '^FuzzRequestHandshake$' -fuzztime=30s` passed with 1,643,107 executions and 39 new interesting inputs.
 - Response fuzz: `go test ./internal/websocket -run '^$' -fuzz '^FuzzResponseHandshake$' -fuzztime=30s` passed with 1,842,691 executions and 19 new interesting inputs.
 - Documentation/configuration: the six-file relative Markdown link audit, `git diff --check`, and `go test ./internal/config -run TestPhase3C3ExampleConfigurationLoads -count=1 -v` passed.
-- Quality gate: Go formatting, `go vet ./...`, `staticcheck -tests=false ./...`, and `revive -set_exit_status -config revive.toml -formatter default ./...` passed. The final `go test -p 1 ./... -count=1` passed in 81.177s, followed by `go build ./cmd/...` passing.
-- Lifecycle repetition: the proxy Phase 3C3 profile passed 20/20 in 38.793s; focused Gateway shutdown/lifecycle passed 20/20 in 7.353s; focused integration WebSocket/shutdown passed 20/20 in 15.129s. They were run sequentially because concurrent package repetition exhausted the Windows loopback ephemeral-port pool. No test process remained after that aborted concurrent attempt.
+- Quality gate: Go formatting, `go vet ./...`, `staticcheck -tests=false ./...`, and `revive -set_exit_status -config revive.toml -formatter default ./...` passed. After the final lifecycle review fixes, `go test -p 1 ./... -count=1` passed in 67.827s, followed by `go build ./cmd/...` passing.
+- Lifecycle repetition: the proxy Phase 3C3 profile passed 20/20 in 38.793s; focused Gateway shutdown/lifecycle passed 20/20 in 7.353s; focused integration WebSocket/shutdown passed 20/20 in 15.129s. The five focused pre-commit timeout/cancellation arbitration tests passed 20/20 in 1.940s after independent concurrency review. The package and integration regression suite then passed. Repetition was run sequentially because concurrent package repetition exhausted the Windows loopback ephemeral-port pool. No test process remained after that aborted concurrent attempt.
 
 ## Developer-host benchmark snapshot
 
