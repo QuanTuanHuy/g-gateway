@@ -63,12 +63,14 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 		var (
 			serviceMeta    *requestctx.ServiceMeta
 			servicePlugins []model.PluginAttachment
+			serviceSocket  model.WebSocketPolicyOverride
 			upstreamID     string
 		)
 		if route.ServiceRef != "" {
 			service := services[route.ServiceRef]
 			serviceMeta = &requestctx.ServiceMeta{ID: service.ID}
 			servicePlugins = service.Plugins
+			serviceSocket = service.WebSocket
 			upstreamID = service.UpstreamRef
 		} else {
 			upstreamID = route.UpstreamRef
@@ -83,6 +85,18 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 				ResourceID:   route.ID,
 				Field:        "upstream_ref",
 				Cause:        fmt.Errorf("upstream plan %q does not exist", upstreamID),
+			}
+		}
+		webSocketPolicy := effectiveWebSocketPolicy(serviceSocket, route.WebSocket)
+		if webSocketPolicy.Enabled && upstreams[upstreamID].Transport.Protocol == model.TransportProtocolHTTP2 {
+			return nil, &BuildError{
+				Code:         "WEBSOCKET_UPSTREAM_PROTOCOL_INVALID",
+				Stage:        StageResolve,
+				Revision:     revision,
+				ResourceKind: "route",
+				ResourceID:   route.ID,
+				Field:        "websocket.enabled",
+				Cause:        fmt.Errorf("strict HTTP/2 upstream does not support classic WebSocket upgrades"),
 			}
 		}
 		chain, err := b.plugins.CompileChain(servicePlugins, route.Plugins)
@@ -106,6 +120,7 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 			plan:         upstreamPlan,
 			plugins:      chain,
 			retry:        effectiveRetryPolicy(upstreams[upstreamID].Retry, route.Resilience),
+			websocket:    webSocketPolicy,
 		})
 		specs = append(specs, router.RouteSpec{
 			Index:    routeIndex,
@@ -137,6 +152,23 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 			PluginCount:   pluginCount,
 		},
 	}, nil
+}
+
+func effectiveWebSocketPolicy(service, route model.WebSocketPolicyOverride) model.WebSocketPolicy {
+	out := model.WebSocketPolicy{IdleTimeout: model.DefaultWebSocketIdleTimeout}
+	if service.Enabled != nil {
+		out.Enabled = *service.Enabled
+	}
+	if service.IdleTimeout != nil {
+		out.IdleTimeout = *service.IdleTimeout
+	}
+	if route.Enabled != nil {
+		out.Enabled = *route.Enabled
+	}
+	if route.IdleTimeout != nil {
+		out.IdleTimeout = *route.IdleTimeout
+	}
+	return out
 }
 
 func effectiveRetryPolicy(base model.RetryPolicy, override model.RouteResiliencePolicy) model.RetryPolicy {

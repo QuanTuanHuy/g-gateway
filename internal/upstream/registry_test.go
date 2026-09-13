@@ -193,6 +193,38 @@ func TestRegistryReusesEqualRuntimeEntries(t *testing.T) {
 	}
 }
 
+func TestTunnelLeasePinsTransportGeneration(t *testing.T) {
+	registry := mustRegistry(t, 64, nil)
+	resource := testUpstream("users", testEndpoint("http://users:8080", 1))
+	resource.Transport.Protocol = model.TransportProtocolHTTP1
+	candidate := mustPrepare(t, registry, []model.Upstream{resource})
+	active := candidate.Commit()
+	plan, ok := active.Plan("users")
+	if !ok {
+		t.Fatal("committed plan is missing")
+	}
+	selection, err := plan.Select(httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := selection.AcquireTunnelLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	active.Retire()
+	registry.reapNow()
+	if got := registry.Stats(); got.LiveTransports != 1 || got.LiveTunnelLeases != 1 || got.RetiredPlanSets != 0 {
+		t.Fatalf("stats while pinned=%+v", got)
+	}
+	lease.Release()
+	lease.Release()
+	registry.reapNow()
+	if got := registry.Stats(); got.LiveTransports != 0 || got.LiveTunnelLeases != 0 {
+		t.Fatalf("stats after release=%+v", got)
+	}
+}
+
 func TestRegistryWeightOnlyChangeReusesRuntimesButCreatesPlan(t *testing.T) {
 	registry := mustRegistry(t, 64, nil)
 	resource := testUpstream("users",

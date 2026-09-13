@@ -83,6 +83,7 @@ func (o *lifecycleObserver) RegistryPrepared(stats upstream.PrepareStats) {
 		"live_selection_states", stats.Current.LiveSelectionStates,
 		"active_plan_sets", stats.Current.ActivePlanSets,
 		"retired_plan_sets", stats.Current.RetiredPlanSets,
+		"live_tunnel_leases", stats.Current.LiveTunnelLeases,
 	)
 }
 
@@ -101,6 +102,7 @@ func (o *lifecycleObserver) RegistryRolledBack(stats upstream.PrepareStats) {
 		"live_selection_states", stats.Current.LiveSelectionStates,
 		"active_plan_sets", stats.Current.ActivePlanSets,
 		"retired_plan_sets", stats.Current.RetiredPlanSets,
+		"live_tunnel_leases", stats.Current.LiveTunnelLeases,
 	)
 }
 
@@ -124,6 +126,7 @@ func (o *lifecycleObserver) RegistryCleaned(stats upstream.CleanupStats) {
 		"live_selection_states", stats.Current.LiveSelectionStates,
 		"active_plan_sets", stats.Current.ActivePlanSets,
 		"retired_plan_sets", stats.Current.RetiredPlanSets,
+		"live_tunnel_leases", stats.Current.LiveTunnelLeases,
 	)
 }
 
@@ -182,5 +185,6 @@ func (o *lifecycleObserver) ShutdownCleanup(stats upstream.RegistryStats) {
 		"live_selection_states", stats.LiveSelectionStates,
 		"active_plan_sets", stats.ActivePlanSets,
 		"retired_plan_sets", stats.RetiredPlanSets,
+		"live_tunnel_leases", stats.LiveTunnelLeases,
 	)
 }

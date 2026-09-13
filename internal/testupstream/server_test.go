@@ -1,11 +1,13 @@
 package testupstream
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,6 +16,51 @@ import (
 	"testing"
 	"time"
 )
+
+func TestWebSocketEcho(t *testing.T) {
+	server := httptest.NewServer(New(testLogger()))
+	defer server.Close()
+	connection, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	buffered := bufio.NewReadWriter(bufio.NewReader(connection), bufio.NewWriter(connection))
+	_, _ = buffered.WriteString("GET /websocket/echo HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+	if err := buffered.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	request, _ := http.NewRequest(http.MethodGet, "http://example.test/websocket/echo", nil)
+	response, err := http.ReadResponse(buffered.Reader, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols || response.Header.Get("Sec-WebSocket-Accept") != "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" {
+		t.Fatalf("response=%d headers=%v", response.StatusCode, response.Header)
+	}
+	masked := []byte{0x81, 0x85, 1, 2, 3, 4, 'h' ^ 1, 'e' ^ 2, 'l' ^ 3, 'l' ^ 4, 'o' ^ 1}
+	if _, err := buffered.Write(masked); err != nil {
+		t.Fatal(err)
+	}
+	if err := buffered.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	echo := make([]byte, 7)
+	if _, err := io.ReadFull(buffered, echo); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(echo, []byte{0x81, 0x05, 'h', 'e', 'l', 'l', 'o'}) {
+		t.Fatalf("echo frame=%v", echo)
+	}
+}
+
+func TestWebSocketEchoRejectsMalformedHandshake(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	New(testLogger()).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/websocket/echo", nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", recorder.Code)
+	}
+}
 
 func TestFixedBodiesAndLimits(t *testing.T) {
 	handler := New(testLogger())

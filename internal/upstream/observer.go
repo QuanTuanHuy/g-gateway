@@ -106,6 +106,9 @@ type RegistryStats struct {
 	// RetiredPlanSets is the current plan-set count awaiting final release or
 	// cleanup.
 	RetiredPlanSets int
+	// LiveTunnelLeases is the number of established tunnels independently
+	// pinning one transport generation.
+	LiveTunnelLeases int
 }
 
 // ResilienceStats contains current bounded health and retry gauges for one

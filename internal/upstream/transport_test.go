@@ -3,6 +3,8 @@ package upstream
 import (
 	"context"
 	"crypto/tls"
+	"encoding/pem"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +16,88 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
 )
+
+func TestAutoUpgradeUsesHTTP1WhileOrdinaryTrafficNegotiatesHTTP2(t *testing.T) {
+	protocols := make(chan int, 2)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		protocols <- request.ProtoMajor
+		if request.Header.Get("Upgrade") != "" {
+			connection, buffered, err := http.NewResponseController(writer).Hijack()
+			if err != nil {
+				t.Errorf("Hijack() error = %v", err)
+				return
+			}
+			defer connection.Close()
+			if _, err := buffered.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"); err != nil {
+				t.Errorf("write upgrade response: %v", err)
+				return
+			}
+			if err := buffered.Flush(); err != nil {
+				t.Errorf("flush upgrade response: %v", err)
+			}
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	bundlePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	bundle, err := tlsmaterial.NewTrustBundle("server", bundlePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := transportTestProfile(t, "http", model.TransportProtocolAuto)
+	profile.scheme = "https"
+	profile.protocol = model.TransportProtocolAuto
+	profile.transport.Protocol = model.TransportProtocolAuto
+	profile.transport.TLS = &model.UpstreamTLSPolicy{TrustBundleRef: "server"}
+	profile.trustBundle = bundle
+	profile.clientCertificate = nil
+	profile.serverName = ""
+	runtime := newTransportRuntime(profile, nil)
+	defer runtime.CloseIdleConnections()
+	selection := Selection{endpoint: &endpointRuntime{}, transport: runtime}
+
+	request, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := selection.RoundTrip(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if got := <-protocols; got != 2 {
+		t.Fatalf("ordinary upstream protocol = HTTP/%d, want HTTP/2", got)
+	}
+
+	upgrade, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgrade.Header.Set("Connection", "Upgrade")
+	upgrade.Header.Set("Upgrade", "websocket")
+	response, err = selection.RoundTripUpgrade(upgrade)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if got := <-protocols; got != 1 {
+		t.Fatalf("upgrade upstream protocol = HTTP/%d, want HTTP/1", got)
+	}
+}
+
+func TestStrictHTTP2RejectsUpgradeRoundTrip(t *testing.T) {
+	runtime := newTransportRuntime(transportTestProfile(t, "http", model.TransportProtocolHTTP2), nil)
+	defer runtime.CloseIdleConnections()
+	selection := Selection{endpoint: &endpointRuntime{}, transport: runtime}
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/events", nil)
+	if _, err := selection.RoundTripUpgrade(request); !errors.Is(err, ErrUpgradeProtocol) {
+		t.Fatalf("RoundTripUpgrade() error = %v", err)
+	}
+}
 
 func TestTransportKeyIncludesEveryConnectionSemantic(t *testing.T) {
 	base := transportTestProfile(t, "https", model.TransportProtocolHTTP2)
@@ -133,6 +217,20 @@ func TestTransportRuntimeCloseIdleConnectionsClosesBothPoolsOnce(t *testing.T) {
 	runtime.CloseIdleConnections()
 	if productionCalls != 1 || probeCalls != 1 {
 		t.Fatalf("close calls production=%d probe=%d, want 1 each", productionCalls, probeCalls)
+	}
+}
+
+func TestTransportRuntimeCloseIdleConnectionsClosesDistinctUpgradePoolOnce(t *testing.T) {
+	runtime := newTransportRuntime(transportTestProfile(t, "http", model.TransportProtocolAuto), nil)
+	productionCalls, probeCalls, upgradeCalls := 0, 0, 0
+	runtime.closeProductionIdle = func() { productionCalls++ }
+	runtime.closeProbeIdle = func() { probeCalls++ }
+	runtime.closeUpgradeIdle = func() { upgradeCalls++ }
+
+	runtime.CloseIdleConnections()
+	runtime.CloseIdleConnections()
+	if productionCalls != 1 || probeCalls != 1 || upgradeCalls != 1 {
+		t.Fatalf("close calls production=%d probe=%d upgrade=%d, want 1 each", productionCalls, probeCalls, upgradeCalls)
 	}
 }
 

@@ -176,7 +176,7 @@ func TestStableFailuresAndRequestGuards(t *testing.T) {
 	upgradeHeaders := make(http.Header)
 	upgradeHeaders.Set("Connection", "Upgrade")
 	upgradeHeaders.Set("Upgrade", "websocket")
-	assertGatewayError(t, http.MethodGet, "http://"+loopback(t, connectAddresses.HTTP)+"/hello", nil, http.StatusNotImplemented, "UPGRADE_NOT_SUPPORTED", upgradeHeaders)
+	assertGatewayError(t, http.MethodGet, "http://"+loopback(t, connectAddresses.HTTP)+"/hello", nil, http.StatusBadGateway, "UPSTREAM_CONNECTION_FAILED", upgradeHeaders)
 
 	upstream := httptest.NewServer(testupstream.New(discardLogger()))
 	defer upstream.Close()

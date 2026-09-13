@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -25,6 +26,7 @@ import (
 	"github.com/QuanTuanHuy/g-gateway/internal/config"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
+	"github.com/QuanTuanHuy/g-gateway/internal/tunnel"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -343,6 +345,93 @@ func TestServesHTTP1AndHTTP2OverTLS(t *testing.T) {
 	h2Protocols.SetHTTP2(true)
 	h2Transport.Protocols = h2Protocols
 	assertProtocol(t, &http.Client{Transport: h2Transport}, target, 2, "HTTP/1.1")
+}
+
+func TestGatewayUsesCertificateProviderForArbitrarySNI(t *testing.T) {
+	fixture := newGatewayFixture(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer fixture.shutdown(t)
+	if fixture.gateway.tlsConfig.GetCertificate == nil || len(fixture.gateway.tlsConfig.Certificates) != 0 {
+		t.Fatalf("TLS config does not use provider callback: %+v", fixture.gateway.tlsConfig)
+	}
+	first, err := fixture.gateway.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "api.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := fixture.gateway.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "other.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Certificate) == 0 || string(first.Certificate[0]) != string(second.Certificate[0]) {
+		t.Fatal("certificate provider changed certificate by SNI")
+	}
+}
+
+func TestGatewayTunnelAdmissionClosesWhenShutdownBegins(t *testing.T) {
+	fixture := newGatewayFixture(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	fixture.shutdown(t)
+	closer := io.NopCloser(strings.NewReader(""))
+	session, err := tunnel.NewSession(
+		tunnel.Endpoint{Reader: strings.NewReader(""), Writer: io.Discard, Closer: closer},
+		tunnel.Endpoint{Reader: strings.NewReader(""), Writer: io.Discard, Closer: io.NopCloser(strings.NewReader(""))},
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.gateway.tunnels.Register(session, func() {}); !errors.Is(err, tunnel.ErrAdmissionClosed) {
+		t.Fatalf("Register() after Shutdown error = %v", err)
+	}
+}
+
+func TestShutdownDeadlineClosesPendingTunnelBeforeWaitingForHandlers(t *testing.T) {
+	fixture := newGatewayFixture(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	if _, err := fixture.gateway.Start(); err != nil {
+		t.Fatal(err)
+	}
+	downstreamPeer, downstreamTunnel := net.Pipe()
+	upstreamTunnel, upstreamPeer := net.Pipe()
+	defer downstreamPeer.Close()
+	defer upstreamPeer.Close()
+	session, err := tunnel.NewSession(
+		tunnel.Endpoint{Reader: downstreamTunnel, Writer: downstreamTunnel, Closer: downstreamTunnel},
+		tunnel.Endpoint{Reader: upstreamTunnel, Writer: upstreamTunnel, Closer: upstreamTunnel},
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releases atomic.Int32
+	if _, err := fixture.gateway.tunnels.Register(session, func() { releases.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	fixture.gateway.trafficRequests.Add(1)
+	go func() {
+		defer fixture.gateway.trafficRequests.Done()
+		_, _ = downstreamTunnel.Read(make([]byte, 1))
+	}()
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		defer cancel()
+		done <- fixture.gateway.Shutdown(ctx)
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown() error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown() hung behind pending hijacked handler")
+	}
+	if releases.Load() != 1 || fixture.gateway.tunnels.Stats() != (tunnel.Stats{}) {
+		t.Fatalf("release=%d stats=%+v", releases.Load(), fixture.gateway.tunnels.Stats())
+	}
 }
 
 func TestShutdownFlipsReadinessBeforeDrain(t *testing.T) {

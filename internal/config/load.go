@@ -105,6 +105,19 @@ func Decode(r io.Reader) (BootstrapConfig, model.ResourceSet, error) {
 			return BootstrapConfig{}, model.ResourceSet{}, err
 		}
 		return bootstrap, resources, nil
+	case apiVersionV1Alpha6:
+		var wire documentV6
+		if err := decodeStrict(data, &wire); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		bootstrap, resources, err := convertV6(wire)
+		if err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		if err := validateV6(wire.APIVersion, &bootstrap, &resources); err != nil {
+			return BootstrapConfig{}, model.ResourceSet{}, err
+		}
+		return bootstrap, resources, nil
 	default:
 		return BootstrapConfig{}, model.ResourceSet{}, fmt.Errorf("api_version: unsupported %q", header.APIVersion)
 	}
