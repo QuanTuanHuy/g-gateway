@@ -59,10 +59,21 @@ func canonicalizeServerName(raw string, scratch *[253]byte) ([]byte, error) {
 	}
 
 	canonical := scratch[:len(raw)]
-	if _, err := netip.ParseAddr(string(canonical)); err == nil {
-		return nil, errInvalidServerName
+	if couldBeIPv4Literal(canonical) {
+		if _, err := netip.ParseAddr(string(canonical)); err == nil {
+			return nil, errInvalidServerName
+		}
 	}
 	return canonical, nil
+}
+
+func couldBeIPv4Literal(canonical []byte) bool {
+	for _, character := range canonical {
+		if (character < '0' || character > '9') && character != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func isDNSLabelCharacter(character byte) bool {
