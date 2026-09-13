@@ -6,8 +6,11 @@
 package testupstream
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,9 +19,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/QuanTuanHuy/g-gateway/internal/websocket"
 )
 
 const maxFixedBodyBytes = 64 * 1024
+const maxWebSocketFrameBytes = 1 << 20
 
 type server struct {
 	logger        *slog.Logger
@@ -54,6 +60,7 @@ func New(logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /fixed/{bytes}", state.fixed)
 	mux.HandleFunc("POST /echo", state.echo)
+	mux.HandleFunc("GET /websocket/echo", serveWebSocketEcho)
 	mux.HandleFunc("GET /headers", state.headers)
 	mux.HandleFunc("GET /stream", state.stream)
 	mux.HandleFunc("GET /delay/{duration}", state.delay)
@@ -66,6 +73,135 @@ func New(logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /debug/reset", state.reset)
 	state.handler = mux
 	return state
+}
+
+func serveWebSocketEcho(writer http.ResponseWriter, request *http.Request) {
+	handshake, err := websocket.ValidateRequest(request)
+	if err != nil {
+		http.Error(writer, "invalid websocket handshake", http.StatusBadRequest)
+		return
+	}
+	connection, buffered, err := http.NewResponseController(writer).Hijack()
+	if err != nil {
+		http.Error(writer, "hijack unavailable", http.StatusInternalServerError)
+		return
+	}
+	defer connection.Close()
+	header := make(http.Header)
+	header.Set("Connection", "Upgrade")
+	header.Set("Upgrade", "websocket")
+	header.Set("Sec-WebSocket-Accept", websocket.AcceptKey(handshake.Key))
+	if len(handshake.Protocols) > 0 {
+		header.Set("Sec-WebSocket-Protocol", handshake.Protocols[0])
+	}
+	if len(handshake.Extensions) > 0 {
+		header["Sec-WebSocket-Extensions"] = append([]string(nil), handshake.Extensions...)
+	}
+	response := &http.Response{
+		StatusCode: http.StatusSwitchingProtocols,
+		Status:     "101 Switching Protocols",
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     header,
+	}
+	if err := response.Write(buffered); err != nil {
+		return
+	}
+	if err := buffered.Flush(); err != nil {
+		return
+	}
+	for {
+		fin, opcode, payload, err := readMaskedWebSocketFrame(buffered.Reader)
+		if err != nil {
+			return
+		}
+		if err := writeUnmaskedWebSocketFrame(buffered.Writer, fin, opcode, payload); err != nil {
+			return
+		}
+		if err := buffered.Flush(); err != nil {
+			return
+		}
+		if opcode == 0x8 {
+			return
+		}
+	}
+}
+
+func readMaskedWebSocketFrame(reader *bufio.Reader) (bool, byte, []byte, error) {
+	var prefix [2]byte
+	if _, err := io.ReadFull(reader, prefix[:]); err != nil {
+		return false, 0, nil, err
+	}
+	if prefix[1]&0x80 == 0 {
+		return false, 0, nil, errors.New("client websocket frame is not masked")
+	}
+	length := uint64(prefix[1] & 0x7f)
+	switch length {
+	case 126:
+		var encoded [2]byte
+		if _, err := io.ReadFull(reader, encoded[:]); err != nil {
+			return false, 0, nil, err
+		}
+		length = uint64(binary.BigEndian.Uint16(encoded[:]))
+	case 127:
+		var encoded [8]byte
+		if _, err := io.ReadFull(reader, encoded[:]); err != nil {
+			return false, 0, nil, err
+		}
+		length = binary.BigEndian.Uint64(encoded[:])
+	}
+	if length > maxWebSocketFrameBytes {
+		return false, 0, nil, errors.New("client websocket frame is too large")
+	}
+	var mask [4]byte
+	if _, err := io.ReadFull(reader, mask[:]); err != nil {
+		return false, 0, nil, err
+	}
+	payload := make([]byte, int(length))
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return false, 0, nil, err
+	}
+	for index := range payload {
+		payload[index] ^= mask[index%len(mask)]
+	}
+	return prefix[0]&0x80 != 0, prefix[0] & 0x0f, payload, nil
+}
+
+func writeUnmaskedWebSocketFrame(writer *bufio.Writer, fin bool, opcode byte, payload []byte) error {
+	first := opcode & 0x0f
+	if fin {
+		first |= 0x80
+	}
+	if err := writer.WriteByte(first); err != nil {
+		return err
+	}
+	switch length := len(payload); {
+	case length < 126:
+		if err := writer.WriteByte(byte(length)); err != nil {
+			return err
+		}
+	case length <= 0xffff:
+		if err := writer.WriteByte(126); err != nil {
+			return err
+		}
+		var encoded [2]byte
+		binary.BigEndian.PutUint16(encoded[:], uint16(length))
+		if _, err := writer.Write(encoded[:]); err != nil {
+			return err
+		}
+	default:
+		if err := writer.WriteByte(127); err != nil {
+			return err
+		}
+		var encoded [8]byte
+		binary.BigEndian.PutUint64(encoded[:], uint64(length))
+		if _, err := writer.Write(encoded[:]); err != nil {
+			return err
+		}
+	}
+	_, err := writer.Write(payload)
+	return err
 }
 
 func (s *server) status(response http.ResponseWriter, request *http.Request) {

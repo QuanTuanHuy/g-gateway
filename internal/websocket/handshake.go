@@ -203,6 +203,11 @@ func accept(key string) string {
 	return base64.StdEncoding.EncodeToString(digest[:])
 }
 
+// AcceptKey returns the RFC 6455 accept value for a validated client key.
+func AcceptKey(key string) string {
+	return accept(key)
+}
+
 func invalid(category string) error {
 	return fmt.Errorf("%w: %s", ErrInvalidHandshake, category)
 }
