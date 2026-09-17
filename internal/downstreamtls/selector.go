@@ -86,6 +86,7 @@ type Selector struct {
 // certificate-selection classification.
 type SelectingCertificateProvider interface {
 	CertificateProvider
+	// Select returns the immutable certificate and its bounded selection class.
 	Select(*tls.ClientHelloInfo) (*tls.Certificate, Selection, error)
 }
 

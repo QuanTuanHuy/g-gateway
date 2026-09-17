@@ -37,6 +37,18 @@ This is developer-machine evidence, not production certification or APISIX parit
 
 The profiles exercised 100 consecutive certificate rotations during concurrent real TLS handshakes, last-good retention after a rejected update, disabled session resumption, continuity of established HTTP/1.1, HTTP/2, and WebSocket connections, new-connection certificate selection, and return to zero retired plan sets and tunnel leases.
 
+Final repository gates passed on the completed tree:
+
+```text
+go test -p 1 ./... -count=1
+go vet ./...
+staticcheck -tests=false ./...
+revive -set_exit_status -config revive.toml -formatter default ./...
+go build ./cmd/...
+```
+
+`gofmt -l` reported no changed Go files, `git diff --check` passed, and the relative-link audit resolved 31 links across the six Markdown files changed by Phase 3C2.
+
 ## Fuzz evidence
 
 Both 30-second fuzz gates passed without a panic or invariant failure:
@@ -83,7 +95,7 @@ All lookup cases satisfied the zero-allocation invariant. Compile time and alloc
 
 ## Pending canonical gates
 
-- `go test -p 1 ./... -race -count=1` on a CGO/compiler-capable host; this developer host reports `CGO_ENABLED=0`.
+- `go test ./... -race -count=1` on a CGO/compiler-capable host. This developer host reports `CGO_ENABLED=0`; the attempted command returned exactly `go: -race requires cgo; enable cgo by setting CGO_ENABLED=1`.
 - Reference-Linux correctness, lifecycle, resource, and performance reproduction.
 - Phase 3D and its integrated APISIX comparison.
 - Deferred canonical evidence from earlier phases where still listed by their status ledgers.
