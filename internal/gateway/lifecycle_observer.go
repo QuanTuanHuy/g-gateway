@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 	"github.com/QuanTuanHuy/g-gateway/internal/telemetry"
@@ -33,8 +34,17 @@ func (o *lifecycleObserver) SnapshotApplied(stats gatewayruntime.Stats) {
 		"services", stats.ServiceCount,
 		"upstreams", stats.UpstreamCount,
 		"plugins", stats.PluginCount,
+		"downstream_certificates", stats.DownstreamCertificateCount,
+		"downstream_exact_bindings", stats.DownstreamExactCount,
+		"downstream_wildcard_bindings", stats.DownstreamWildcardCount,
+		"downstream_earliest_expiry_seconds", max(0, time.Until(stats.DownstreamEarliestExpiry).Seconds()),
 		"duration_seconds", stats.BuildDuration.Seconds(),
 	)
+}
+
+// DownstreamTLSSelection forwards one bounded downstream certificate selection.
+func (o *lifecycleObserver) DownstreamTLSSelection(selection downstreamtls.Selection) {
+	o.telemetry.DownstreamTLSSelection(selection)
 }
 
 // SnapshotRejected forwards bounded rejection metrics and logs only stable

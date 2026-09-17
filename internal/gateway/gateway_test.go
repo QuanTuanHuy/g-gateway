@@ -347,24 +347,55 @@ func TestServesHTTP1AndHTTP2OverTLS(t *testing.T) {
 	assertProtocol(t, &http.Client{Transport: h2Transport}, target, 2, "HTTP/1.1")
 }
 
-func TestGatewayUsesCertificateProviderForArbitrarySNI(t *testing.T) {
+func TestGatewayUsesRuntimeCertificateCallbackAndDisablesSessionTickets(t *testing.T) {
 	fixture := newGatewayFixture(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 	defer fixture.shutdown(t)
 	if fixture.gateway.tlsConfig.GetCertificate == nil || len(fixture.gateway.tlsConfig.Certificates) != 0 {
-		t.Fatalf("TLS config does not use provider callback: %+v", fixture.gateway.tlsConfig)
+		t.Fatalf("TLS config lacks runtime certificate callback: %+v", fixture.gateway.tlsConfig)
 	}
-	first, err := fixture.gateway.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "api.example"})
+	if !fixture.gateway.tlsConfig.SessionTicketsDisabled {
+		t.Fatal("TLS session tickets remain enabled")
+	}
+	certificate, err := fixture.gateway.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "api.example"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := fixture.gateway.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "other.example"})
+	if len(certificate.Certificate) == 0 {
+		t.Fatal("runtime certificate callback returned an empty certificate")
+	}
+}
+
+func TestGatewayRuntimeCallbackSelectsDynamicCertificate(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstreamServer.Close()
+	certificateFile, privateKeyFile := writeCertificatePair(t)
+	resources := testResources(upstreamServer.URL)
+	resources.Certificates = []*tlsmaterial.Certificate{
+		gatewayTestCertificate(t, "default", 10, []string{"default.example"}),
+		gatewayTestCertificate(t, "api", 20, []string{"api.example"}),
+	}
+	resources.DownstreamTLS = &model.DownstreamTLSPolicy{
+		DefaultCertificateRef: "default",
+		SNIBindings:           []model.SNIBinding{{CertificateRef: "api", Hosts: []string{"api.example"}}},
+	}
+	gateway, err := New(testBootstrap(certificateFile, privateKeyFile), resources, testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Certificate) == 0 || string(first.Certificate[0]) != string(second.Certificate[0]) {
-		t.Fatal("certificate provider changed certificate by SNI")
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := gateway.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	}()
+	certificate, err := gateway.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "api.example"})
+	if err != nil || certificate.Leaf == nil || certificate.Leaf.SerialNumber.Int64() != 20 {
+		t.Fatalf("GetCertificate() = (%v, %v), want serial 20", certificate, err)
 	}
 }
 
@@ -973,6 +1004,41 @@ func writeCertificatePair(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	return certFile, keyFile
+}
+
+func gatewayTestCertificate(t testing.TB, id string, serial int64, dnsNames []string) *tlsmaterial.Certificate {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(serial),
+		Subject:      pkix.Name{CommonName: id},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     append([]string(nil), dnsNames...),
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKeyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, err := tlsmaterial.NewCertificate(
+		id,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKeyDER}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return material
 }
 
 func testLogger() *slog.Logger {

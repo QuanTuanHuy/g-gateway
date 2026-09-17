@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
 	"github.com/QuanTuanHuy/g-gateway/internal/telemetry"
@@ -28,13 +29,18 @@ func TestLifecycleObserverForwardsMetricsAndLogsBoundedFields(t *testing.T) {
 	)
 
 	observer.SnapshotApplied(gatewayruntime.Stats{
-		Revision:      7,
-		RouteCount:    11,
-		ServiceCount:  3,
-		UpstreamCount: 2,
-		PluginCount:   5,
-		BuildDuration: 25 * time.Millisecond,
+		Revision:                   7,
+		RouteCount:                 11,
+		ServiceCount:               3,
+		UpstreamCount:              2,
+		PluginCount:                5,
+		DownstreamCertificateCount: 3,
+		DownstreamExactCount:       2,
+		DownstreamWildcardCount:    1,
+		DownstreamEarliestExpiry:   time.Now().Add(time.Hour),
+		BuildDuration:              25 * time.Millisecond,
 	})
+	observer.DownstreamTLSSelection(downstreamtls.SelectionExact)
 	observer.SnapshotRejected(&gatewayruntime.BuildError{
 		Code:         "REFERENCE_NOT_FOUND",
 		Stage:        gatewayruntime.StageResolve,
@@ -119,6 +125,9 @@ func TestLifecycleObserverForwardsMetricsAndLogsBoundedFields(t *testing.T) {
 		`"tls":true`,
 		`"protocol":"http2"`,
 		`"class":"hostname"`,
+		`"downstream_certificates":3`,
+		`"downstream_exact_bindings":2`,
+		`"downstream_wildcard_bindings":1`,
 	} {
 		if !strings.Contains(logBody, fragment) {
 			t.Fatalf("logs do not contain bounded field %q:\n%s", fragment, logBody)
@@ -148,6 +157,7 @@ func TestLifecycleObserverForwardsMetricsAndLogsBoundedFields(t *testing.T) {
 		`gateway_upstream_tls_failure_total{class="hostname"} 1`,
 		`gateway_upstream_transport_generation_total{action="create",protocol="http2",tls="true"} 1`,
 		`gateway_upstream_transport_generation_total{action="retire",protocol="http2",tls="true"} 1`,
+		`gateway_downstream_tls_certificate_selections_total{selection="exact"} 1`,
 	} {
 		if !strings.Contains(metrics, fragment) {
 			t.Fatalf("metrics do not contain %q:\n%s", fragment, metrics)
