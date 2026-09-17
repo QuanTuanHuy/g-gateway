@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -9,10 +10,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,11 +109,140 @@ func TestRejectedDownstreamTLSRotationKeepsLastGood(t *testing.T) {
 	}
 }
 
+func TestDownstreamTLSSessionResumptionIsDisabled(t *testing.T) {
+	now := time.Now()
+	certificate := newTestCertificate(t, "default", 1, []string{"gateway.example"}, now)
+	_, addresses, _ := startDownstreamTLSGateway(t, []testCertificate{certificate})
+	clientTLS := &tls.Config{
+		RootCAs:            certificatePool(certificate),
+		ServerName:         "gateway.example",
+		ClientSessionCache: tls.NewLRUClientSessionCache(8),
+		MinVersion:         tls.VersionTLS12,
+	}
+	transport := &http.Transport{TLSClientConfig: clientTLS, DisableKeepAlives: true}
+	client := &http.Client{Transport: transport}
+	defer transport.CloseIdleConnections()
+	for attempt := 1; attempt <= 2; attempt++ {
+		response, err := client.Get("https://" + loopback(t, addresses.HTTPS) + "/hello")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		if response.TLS == nil || response.TLS.DidResume {
+			t.Fatalf("connection %d DidResume = %v, want false", attempt, response.TLS != nil && response.TLS.DidResume)
+		}
+	}
+}
+
+func TestHTTP1ConnectionSurvivesCertificateRotation(t *testing.T) {
+	now := time.Now()
+	defaultCertificate := newTestCertificate(t, "default", 1, []string{"default.example"}, now)
+	exactCertificate := newTestCertificate(t, "exact", 2, []string{"api.example.com"}, now)
+	instance, addresses, resources := startDownstreamTLSGateway(t, []testCertificate{defaultCertificate, exactCertificate})
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: certificatePool(defaultCertificate, exactCertificate), ServerName: "api.example.com"},
+		MaxConnsPerHost: 1,
+	}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	transport.Protocols = protocols
+	client := &http.Client{Transport: transport}
+	defer transport.CloseIdleConnections()
+
+	request, _ := http.NewRequest(http.MethodGet, "https://"+loopback(t, addresses.HTTPS)+"/hello", nil)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.TLS == nil || response.TLS.PeerCertificates[0].SerialNumber.Int64() != 2 {
+		t.Fatalf("initial TLS state = %+v", response.TLS)
+	}
+
+	rotated := newTestCertificate(t, "exact", 4, []string{"api.example.com"}, now)
+	resources.Certificates[1] = rotated.Material
+	if err := instance.Apply(2, resources); err != nil {
+		t.Fatal(err)
+	}
+	var reused bool
+	request, _ = http.NewRequest(http.MethodGet, "https://"+loopback(t, addresses.HTTPS)+"/hello", nil)
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+	}))
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if !reused || response.TLS.PeerCertificates[0].SerialNumber.Int64() != 2 {
+		t.Fatalf("established connection reused=%v serial=%v", reused, response.TLS.PeerCertificates[0].SerialNumber)
+	}
+	if got := dialDownstreamTLSSerial(t, addresses.HTTPS, "api.example.com", certificatePool(defaultCertificate, rotated), nil); got != 4 {
+		t.Fatalf("new connection serial = %d, want 4", got)
+	}
+}
+
+func TestHTTP2StreamSurvivesCertificateRotation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	upstreamHandler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "before\n")
+		writer.(http.Flusher).Flush()
+		close(started)
+		<-release
+		_, _ = io.WriteString(writer, "after\n")
+	})
+	now := time.Now()
+	defaultCertificate := newTestCertificate(t, "default", 1, []string{"default.example"}, now)
+	exactCertificate := newTestCertificate(t, "exact", 2, []string{"api.example.com"}, now)
+	instance, addresses, resources := startDownstreamTLSGatewayWithHandler(t, []testCertificate{defaultCertificate, exactCertificate}, upstreamHandler)
+	transport := &http.Transport{
+		TLSClientConfig:   &tls.Config{RootCAs: certificatePool(defaultCertificate, exactCertificate), ServerName: "api.example.com"},
+		ForceAttemptHTTP2: true,
+	}
+	client := &http.Client{Transport: transport}
+	defer transport.CloseIdleConnections()
+	response, err := client.Get("https://" + loopback(t, addresses.HTTPS) + "/hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	reader := bufio.NewReader(response.Body)
+	line, err := reader.ReadString('\n')
+	if err != nil || line != "before\n" || response.ProtoMajor != 2 {
+		t.Fatalf("first stream chunk=%q protocol=%s err=%v", line, response.Proto, err)
+	}
+	<-started
+
+	rotated := newTestCertificate(t, "exact", 4, []string{"api.example.com"}, now)
+	resources.Certificates[1] = rotated.Material
+	if err := instance.Apply(2, resources); err != nil {
+		t.Fatal(err)
+	}
+	if got := dialDownstreamTLSSerial(t, addresses.HTTPS, "api.example.com", certificatePool(defaultCertificate, rotated), nil); got != 4 {
+		t.Fatalf("new connection serial = %d, want 4", got)
+	}
+	releaseOnce.Do(func() { close(release) })
+	rest, err := io.ReadAll(reader)
+	if err != nil || string(rest) != "after\n" {
+		t.Fatalf("remaining stream = %q, error = %v", rest, err)
+	}
+}
+
 func startDownstreamTLSGateway(t *testing.T, certificates []testCertificate) (*gateway.Gateway, gateway.Addresses, model.ResourceSet) {
-	t.Helper()
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	return startDownstreamTLSGatewayWithHandler(t, certificates, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 	}))
+}
+
+func startDownstreamTLSGatewayWithHandler(t *testing.T, certificates []testCertificate, handler http.Handler) (*gateway.Gateway, gateway.Addresses, model.ResourceSet) {
+	t.Helper()
+	upstream := httptest.NewServer(handler)
 	t.Cleanup(upstream.Close)
 	certificateFile, privateKeyFile := writeCertificatePair(t)
 	bootstrap := config.BootstrapConfig{
