@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
@@ -27,6 +28,14 @@ type Stats struct {
 	// BuildDuration is the elapsed time spent preparing and compiling the
 	// snapshot.
 	BuildDuration time.Duration
+	// DownstreamCertificateCount is the number of distinct active downstream certificates.
+	DownstreamCertificateCount int
+	// DownstreamExactCount is the number of active exact SNI bindings.
+	DownstreamExactCount int
+	// DownstreamWildcardCount is the number of active wildcard SNI bindings.
+	DownstreamWildcardCount int
+	// DownstreamEarliestExpiry is the earliest expiry among active downstream certificates.
+	DownstreamEarliestExpiry time.Time
 }
 
 // CompiledRoute is an immutable request-path binding of metadata, plugins,
@@ -47,11 +56,12 @@ type CompiledRoute struct {
 // upstream resources remain valid while the Manager lease that exposed it is
 // held.
 type Snapshot struct {
-	revision uint64
-	router   *router.Router
-	routes   []CompiledRoute
-	plans    *upstream.PlanSet
-	stats    Stats
+	revision      uint64
+	router        *router.Router
+	routes        []CompiledRoute
+	plans         *upstream.PlanSet
+	downstreamTLS downstreamtls.CertificateProvider
+	stats         Stats
 }
 
 // Match describes a compiled route match, method-only mismatch, or no match.
