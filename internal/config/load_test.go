@@ -192,6 +192,98 @@ func TestV1Alpha6AbsentWebSocketFieldsRemainAbsent(t *testing.T) {
 	}
 }
 
+func TestDecodeV1Alpha7DownstreamTLS(t *testing.T) {
+	_, resources, err := Decode(strings.NewReader(validV7Document(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resources.DownstreamTLS == nil ||
+		resources.DownstreamTLS.DefaultCertificateRef != "default-server" ||
+		len(resources.DownstreamTLS.SNIBindings) != 1 ||
+		resources.DownstreamTLS.SNIBindings[0].Hosts[0] != "*.example.com" {
+		t.Fatalf("downstream TLS policy = %+v", resources.DownstreamTLS)
+	}
+}
+
+func TestDecodeV1Alpha7RejectsInvalidDownstreamTLSShape(t *testing.T) {
+	base := validV7Document(t)
+	tests := []struct {
+		name     string
+		document func(string) string
+		wantErr  string
+	}{
+		{name: "missing downstream TLS", document: func(document string) string {
+			return strings.Replace(document, validV7DownstreamTLSBlock, "", 1)
+		}, wantErr: "downstream_tls"},
+		{name: "empty default ref", document: func(document string) string {
+			return strings.Replace(document, "default_certificate_ref: default-server", "default_certificate_ref: ''", 1)
+		}, wantErr: "default_certificate_ref"},
+		{name: "empty binding ref", document: func(document string) string {
+			return strings.Replace(document, "certificate_ref: wildcard-server", "certificate_ref: ''", 1)
+		}, wantErr: "certificate_ref"},
+		{name: "empty host list", document: func(document string) string {
+			return strings.Replace(document, "hosts: ['*.example.com']", "hosts: []", 1)
+		}, wantErr: "hosts"},
+		{name: "unknown downstream field", document: func(document string) string {
+			return strings.Replace(document, "default_certificate_ref: default-server", "default_certificate_ref: default-server\n  unknown: value", 1)
+		}, wantErr: "unknown"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := Decode(strings.NewReader(test.document(base)))
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Decode() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestLegacyVersionsLeaveDownstreamTLSPolicyAbsent(t *testing.T) {
+	for _, document := range []string{
+		validV5Document(t),
+		strings.Replace(validV5Document(t), "gateway/v1alpha5", "gateway/v1alpha6", 1),
+	} {
+		_, resources, err := Decode(strings.NewReader(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resources.DownstreamTLS != nil {
+			t.Fatalf("legacy downstream TLS policy = %+v, want nil", resources.DownstreamTLS)
+		}
+	}
+}
+
+func TestPhase3C2ExampleConfigurationHasDownstreamTLSShape(t *testing.T) {
+	document, err := os.ReadFile(filepath.Join("..", "..", "configs", "phase3c2.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateFile, privateKeyFile, caFile := writeV5MaterialFiles(t)
+	rendered := string(document)
+	for mounted, local := range map[string]string{
+		"/certs/server.crt":            filepath.ToSlash(certificateFile),
+		"/certs/server.key":            filepath.ToSlash(privateKeyFile),
+		"/secrets/internal-ca.pem":     filepath.ToSlash(caFile),
+		"/secrets/default-server.crt":  filepath.ToSlash(certificateFile),
+		"/secrets/default-server.key":  filepath.ToSlash(privateKeyFile),
+		"/secrets/exact-server.crt":    filepath.ToSlash(certificateFile),
+		"/secrets/exact-server.key":    filepath.ToSlash(privateKeyFile),
+		"/secrets/wildcard-server.crt": filepath.ToSlash(certificateFile),
+		"/secrets/wildcard-server.key": filepath.ToSlash(privateKeyFile),
+	} {
+		rendered = strings.ReplaceAll(rendered, mounted, local)
+	}
+	_, resources, err := Decode(strings.NewReader(rendered))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resources.DownstreamTLS == nil || resources.DownstreamTLS.DefaultCertificateRef != "default-server" ||
+		len(resources.DownstreamTLS.SNIBindings) != 2 {
+		t.Fatalf("example downstream TLS policy = %+v", resources.DownstreamTLS)
+	}
+}
+
 func TestOlderVersionsDisableWebSocket(t *testing.T) {
 	certificateFile, privateKeyFile := writeTLSFiles(t)
 	documents := []string{
@@ -1006,6 +1098,35 @@ routes:
         client_certificate_ref: orders-client
         server_name: orders.internal
 `,
+		1,
+	)
+	return document
+}
+
+const validV7DownstreamTLSBlock = `downstream_tls:
+  default_certificate_ref: default-server
+  sni_bindings:
+    - certificate_ref: wildcard-server
+      hosts: ['*.example.com']
+
+`
+
+func validV7Document(t *testing.T) string {
+	t.Helper()
+	document := strings.Replace(validV5Document(t), "gateway/v1alpha5", "gateway/v1alpha7", 1)
+	material := `  - id: default-server
+    certificate_file: %s
+    private_key_file: %s
+  - id: wildcard-server
+    certificate_file: %s
+    private_key_file: %s
+
+`
+	certificateFile, privateKeyFile, _ := writeV5MaterialFiles(t)
+	document = strings.Replace(
+		document,
+		"routes:\n",
+		fmt.Sprintf(material, filepath.ToSlash(certificateFile), filepath.ToSlash(privateKeyFile), filepath.ToSlash(certificateFile), filepath.ToSlash(privateKeyFile))+validV7DownstreamTLSBlock+"routes:\n",
 		1,
 	)
 	return document

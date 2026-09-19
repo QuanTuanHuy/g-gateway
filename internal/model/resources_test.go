@@ -211,3 +211,31 @@ func TestCloneResourceSetClonesTLSReferencesAndSharesImmutableMaterial(t *testin
 		t.Fatal("CloneResourceSet() did not retain immutable material handles")
 	}
 }
+
+func TestCloneResourceSetOwnsDownstreamTLSPolicy(t *testing.T) {
+	in := ResourceSet{DownstreamTLS: &DownstreamTLSPolicy{
+		DefaultCertificateRef: "default",
+		SNIBindings: []SNIBinding{{
+			CertificateRef: "wild",
+			Hosts:          []string{"*.example.com"},
+		}},
+	}}
+
+	out := CloneResourceSet(in)
+	out.DownstreamTLS.DefaultCertificateRef = "changed"
+	out.DownstreamTLS.SNIBindings[0].CertificateRef = "changed"
+	out.DownstreamTLS.SNIBindings[0].Hosts[0] = "api.example.com"
+
+	if in.DownstreamTLS.DefaultCertificateRef != "default" ||
+		in.DownstreamTLS.SNIBindings[0].CertificateRef != "wild" ||
+		in.DownstreamTLS.SNIBindings[0].Hosts[0] != "*.example.com" {
+		t.Fatal("CloneResourceSet aliased downstream TLS policy")
+	}
+}
+
+func TestCloneResourceSetPreservesAbsentDownstreamTLSPolicy(t *testing.T) {
+	out := CloneResourceSet(ResourceSet{})
+	if out.DownstreamTLS != nil {
+		t.Fatalf("DownstreamTLS = %+v, want nil", out.DownstreamTLS)
+	}
+}

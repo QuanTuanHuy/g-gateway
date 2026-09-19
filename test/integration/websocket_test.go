@@ -355,6 +355,49 @@ func TestWebSocketReloadKeepsExistingTunnel(t *testing.T) {
 	waitForMetric(t, addresses.Admin, "gateway_websocket_active_tunnels 0")
 }
 
+func TestWebSocketSurvivesCertificateRotation(t *testing.T) {
+	upstream := httptest.NewServer(testupstream.New(discardLogger()))
+	defer upstream.Close()
+	now := time.Now()
+	oldCertificate := newTestCertificate(t, "default", 41, []string{"gateway.example"}, now)
+	resources := websocketResources(upstream.URL, true)
+	resources.Certificates = []*tlsmaterial.Certificate{oldCertificate.Material}
+	resources.DownstreamTLS = &model.DownstreamTLSPolicy{DefaultCertificateRef: "default"}
+	instance, addresses := startWebSocketGateway(t, resources, 3*time.Second)
+	client := dialRawWebSocket(t, loopback(t, addresses.HTTPS), "gateway.example", "/websocket/echo", &tls.Config{
+		RootCAs: certificatePool(oldCertificate), ServerName: "gateway.example", MinVersion: tls.VersionTLS12,
+	})
+	client.WriteFrame(t, true, 1, []byte("before"))
+	_, _, payload := client.ReadFrame(t)
+	if string(payload) != "before" {
+		t.Fatalf("echo before rotation = %q", payload)
+	}
+
+	newCertificate := newTestCertificate(t, "default", 42, []string{"gateway.example"}, now)
+	rotated := model.CloneResourceSet(resources)
+	rotated.Certificates[0] = newCertificate.Material
+	if err := instance.Apply(2, rotated); err != nil {
+		t.Fatal(err)
+	}
+	client.WriteFrame(t, true, 1, []byte("after"))
+	_, _, payload = client.ReadFrame(t)
+	if string(payload) != "after" {
+		t.Fatalf("echo after rotation = %q", payload)
+	}
+
+	newClient := dialRawWebSocket(t, loopback(t, addresses.HTTPS), "gateway.example", "/websocket/echo", &tls.Config{
+		RootCAs: certificatePool(newCertificate), ServerName: "gateway.example", MinVersion: tls.VersionTLS12,
+	})
+	connection, ok := newClient.connection.(*tls.Conn)
+	if !ok {
+		t.Fatalf("new WebSocket connection type = %T", newClient.connection)
+	}
+	state := connection.ConnectionState()
+	if len(state.PeerCertificates) == 0 || state.PeerCertificates[0].SerialNumber.Int64() != 42 {
+		t.Fatalf("new WebSocket peer certificates = %+v", state.PeerCertificates)
+	}
+}
+
 func TestWebSocketShutdownDrainsNaturally(t *testing.T) {
 	upstream := httptest.NewServer(testupstream.New(discardLogger()))
 	defer upstream.Close()

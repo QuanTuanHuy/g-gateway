@@ -2,12 +2,14 @@ package runtime
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
@@ -21,6 +23,12 @@ type Observer interface {
 	// SnapshotRejected reports a rejected build and its elapsed build duration.
 	SnapshotRejected(*BuildError, time.Duration)
 }
+
+type downstreamTLSObserver interface {
+	DownstreamTLSSelection(downstreamtls.Selection)
+}
+
+var errDownstreamTLSUnavailable = errors.New("DOWNSTREAM_TLS_UNAVAILABLE")
 
 // Manager serializes configuration application and atomically publishes
 // immutable snapshots. It is safe for concurrent Apply, Acquire, Load, stats,
@@ -239,6 +247,33 @@ func (m *Manager) Load() *Snapshot {
 	return m.active.Load()
 }
 
+// GetCertificate selects a certificate from one atomically loaded active snapshot.
+func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	if m == nil {
+		return nil, errDownstreamTLSUnavailable
+	}
+	snapshot := m.active.Load()
+	if snapshot == nil || snapshot.downstreamTLS == nil {
+		m.notifyDownstreamTLSSelection(downstreamtls.SelectionError)
+		return nil, errDownstreamTLSUnavailable
+	}
+	if provider, ok := snapshot.downstreamTLS.(downstreamtls.SelectingCertificateProvider); ok {
+		certificate, selection, err := provider.Select(hello)
+		if err != nil {
+			selection = downstreamtls.SelectionError
+		}
+		m.notifyDownstreamTLSSelection(boundedDownstreamTLSSelection(selection))
+		return certificate, err
+	}
+	certificate, err := snapshot.downstreamTLS.GetCertificate(hello)
+	selection := downstreamtls.SelectionDefault
+	if err != nil {
+		selection = downstreamtls.SelectionError
+	}
+	m.notifyDownstreamTLSSelection(selection)
+	return certificate, err
+}
+
 func (m *Manager) notifyApplied(stats Stats) {
 	if m.observer == nil {
 		return
@@ -257,6 +292,26 @@ func (m *Manager) notifyRejected(buildErr *BuildError, duration time.Duration) {
 		_ = recover()
 	}()
 	m.observer.SnapshotRejected(buildErr, duration)
+}
+
+func (m *Manager) notifyDownstreamTLSSelection(selection downstreamtls.Selection) {
+	observer, ok := m.observer.(downstreamTLSObserver)
+	if !ok {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	observer.DownstreamTLSSelection(selection)
+}
+
+func boundedDownstreamTLSSelection(selection downstreamtls.Selection) downstreamtls.Selection {
+	switch selection {
+	case downstreamtls.SelectionExact, downstreamtls.SelectionWildcard, downstreamtls.SelectionDefault, downstreamtls.SelectionError:
+		return selection
+	default:
+		return downstreamtls.SelectionError
+	}
 }
 
 func upstreamBuildError(revision uint64, err error) *BuildError {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
 	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
@@ -39,6 +41,50 @@ func TestManagerPrepareResourceSetResolvesTLSMaterials(t *testing.T) {
 	if stats := manager.UpstreamStats(); stats.LiveTransports != 1 {
 		t.Fatalf("upstream stats=%+v", stats)
 	}
+}
+
+func TestManagerGetCertificateTracksPublishedRevision(t *testing.T) {
+	resources := runtimeTLSResources(t, 11, "api.example.com")
+	builder := mustBuilder(t, resources.Upstreams)
+	manager := newManagerForBuilder(t, builder, nil)
+	if err := manager.Apply(1, resources); err != nil {
+		t.Fatal(err)
+	}
+	assertManagerCertificateSerial(t, manager, "api.example.com", 11)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	builder.beforeBuild = func(revision uint64) {
+		if revision == 2 {
+			close(entered)
+			<-release
+		}
+	}
+	rotated := runtimeTLSResources(t, 22, "api.example.com")
+	done := make(chan error, 1)
+	go func() { done <- manager.Apply(2, rotated) }()
+	<-entered
+	assertManagerCertificateSerial(t, manager, "api.example.com", 11)
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	assertManagerCertificateSerial(t, manager, "api.example.com", 22)
+}
+
+func TestManagerRejectedDownstreamTLSKeepsLastGoodCertificate(t *testing.T) {
+	resources := runtimeTLSResources(t, 11, "api.example.com")
+	manager := newRegistryManager(t)
+	if err := manager.Apply(1, resources); err != nil {
+		t.Fatal(err)
+	}
+	invalid := runtimeTLSResources(t, 22, "other.example.com")
+	err := manager.Apply(2, invalid)
+	var buildErr *BuildError
+	if !errors.As(err, &buildErr) || buildErr.Code != downstreamtls.CodeCertificateHostnameMismatch {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	assertManagerCertificateSerial(t, manager, "api.example.com", 11)
 }
 
 func TestManagerCandidatePrepareFailureKeepsActiveSnapshotAndRegistry(t *testing.T) {
@@ -425,4 +471,69 @@ func equalRevisions(got, want []uint64) bool {
 		}
 	}
 	return true
+}
+
+type runtimeTestCertificateProvider struct {
+	certificate tls.Certificate
+}
+
+func (p *runtimeTestCertificateProvider) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return &p.certificate, nil
+}
+
+func runtimeTLSResources(t *testing.T, serial int64, certificateSAN string) model.ResourceSet {
+	t.Helper()
+	resources := testResources()
+	resources.Certificates = []*tlsmaterial.Certificate{
+		runtimeTestCertificate(t, "default", serial+1000, []string{"default.example"}),
+		runtimeTestCertificate(t, "exact", serial, []string{certificateSAN}),
+	}
+	resources.DownstreamTLS = &model.DownstreamTLSPolicy{
+		DefaultCertificateRef: "default",
+		SNIBindings:           []model.SNIBinding{{CertificateRef: "exact", Hosts: []string{"api.example.com"}}},
+	}
+	return resources
+}
+
+func runtimeTestCertificate(t testing.TB, id string, serial int64, dnsNames []string) *tlsmaterial.Certificate {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(serial),
+		Subject:      pkix.Name{CommonName: id},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     append([]string(nil), dnsNames...),
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKeyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, err := tlsmaterial.NewCertificate(
+		id,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKeyDER}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return material
+}
+
+func assertManagerCertificateSerial(t *testing.T, manager *Manager, serverName string, want int64) {
+	t.Helper()
+	certificate, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: serverName})
+	if err != nil || certificate == nil || certificate.Leaf == nil || certificate.Leaf.SerialNumber.Int64() != want {
+		t.Fatalf("GetCertificate(%q) = (%v, %v), want serial %d", serverName, certificate, err, want)
+	}
 }

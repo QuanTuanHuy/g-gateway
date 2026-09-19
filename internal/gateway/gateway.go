@@ -126,7 +126,7 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 		closeRegistry()
 		return nil, fmt.Errorf("register resilience telemetry: %w", err)
 	}
-	builder, err := gatewayruntime.NewBuilder(pluginRegistry)
+	builder, err := gatewayruntime.NewBuilderWithCertificateProvider(pluginRegistry, provider)
 	if err != nil {
 		closeTunnels()
 		closeRegistry()
@@ -166,9 +166,10 @@ func New(bootstrap config.BootstrapConfig, resources model.ResourceSet, logger *
 	adminProtocols.SetHTTP1(true)
 
 	tlsConfig := &tls.Config{
-		GetCertificate: provider.GetCertificate,
-		MinVersion:     tls.VersionTLS12,
-		NextProtos:     []string{"h2", "http/1.1"},
+		GetCertificate:         manager.GetCertificate,
+		MinVersion:             tls.VersionTLS12,
+		NextProtos:             []string{"h2", "http/1.1"},
+		SessionTicketsDisabled: true,
 	}
 	gateway := &Gateway{
 		tlsConfig:   tlsConfig,

@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
@@ -21,35 +22,42 @@ import (
 // Telemetry owns an isolated Prometheus registry, readiness state, and the
 // private admin HTTP handler. Its exported methods are safe for concurrent use.
 type Telemetry struct {
-	ready                 atomic.Bool
-	registry              *prometheus.Registry
-	requests              *prometheus.CounterVec
-	duration              *prometheus.HistogramVec
-	balancerSelections    *prometheus.CounterVec
-	hashFallbacks         *prometheus.CounterVec
-	requestMetricsEnabled bool
-	activeRevision        prometheus.Gauge
-	snapshotApplyDuration prometheus.Histogram
-	snapshotApplyTotal    *prometheus.CounterVec
-	compiledRoutes        prometheus.Gauge
-	compiledServices      prometheus.Gauge
-	compiledPlugins       prometheus.Gauge
-	liveEndpoints         prometheus.Gauge
-	liveTransports        prometheus.Gauge
-	liveSelectionStates   prometheus.Gauge
-	retiredSnapshots      prometheus.Gauge
-	registryResources     *prometheus.CounterVec
-	registryRollbacks     prometheus.Counter
-	transportCleanup      prometheus.Counter
-	tlsHandshake          [2][2][3]prometheus.Counter
-	tlsFailures           [5]prometheus.Counter
-	transportLifecycle    [3][2][3]prometheus.Counter
-	webSocketHandshakes   [6]prometheus.Counter
-	webSocketActive       prometheus.Gauge
-	webSocketClosed       [5]prometheus.Counter
-	webSocketDuration     prometheus.Histogram
-	webSocketBytes        [2]prometheus.Counter
-	adminHandler          http.Handler
+	ready                    atomic.Bool
+	registry                 *prometheus.Registry
+	requests                 *prometheus.CounterVec
+	duration                 *prometheus.HistogramVec
+	balancerSelections       *prometheus.CounterVec
+	hashFallbacks            *prometheus.CounterVec
+	requestMetricsEnabled    bool
+	activeRevision           prometheus.Gauge
+	snapshotApplyDuration    prometheus.Histogram
+	snapshotApplyTotal       *prometheus.CounterVec
+	compiledRoutes           prometheus.Gauge
+	compiledServices         prometheus.Gauge
+	compiledPlugins          prometheus.Gauge
+	downstreamCertificates   prometheus.Gauge
+	downstreamExact          prometheus.Gauge
+	downstreamWildcard       prometheus.Gauge
+	downstreamExpiry         prometheus.GaugeFunc
+	downstreamSelections     [4]prometheus.Counter
+	downstreamExpiryUnixNano atomic.Int64
+	now                      func() time.Time
+	liveEndpoints            prometheus.Gauge
+	liveTransports           prometheus.Gauge
+	liveSelectionStates      prometheus.Gauge
+	retiredSnapshots         prometheus.Gauge
+	registryResources        *prometheus.CounterVec
+	registryRollbacks        prometheus.Counter
+	transportCleanup         prometheus.Counter
+	tlsHandshake             [2][2][3]prometheus.Counter
+	tlsFailures              [5]prometheus.Counter
+	transportLifecycle       [3][2][3]prometheus.Counter
+	webSocketHandshakes      [6]prometheus.Counter
+	webSocketActive          prometheus.Gauge
+	webSocketClosed          [5]prometheus.Counter
+	webSocketDuration        prometheus.Histogram
+	webSocketBytes           [2]prometheus.Counter
+	adminHandler             http.Handler
 }
 
 // New constructs Telemetry with Go, process, runtime, and upstream metrics.
@@ -83,6 +91,12 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 		Name:      "transport_generation_total",
 		Help:      "Total upstream transport generation lifecycle events.",
 	}, []string{"action", "tls", "protocol"})
+	downstreamSelections := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gateway",
+		Subsystem: "downstream_tls",
+		Name:      "certificate_selections_total",
+		Help:      "Total downstream certificate selections by bounded class.",
+	}, []string{"selection"})
 	webSocketHandshakes := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "gateway",
 		Subsystem: "websocket",
@@ -141,6 +155,25 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 			Name:      "compiled_plugins",
 			Help:      "Number of plugin instances in the active runtime snapshot.",
 		}),
+		downstreamCertificates: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "downstream_tls",
+			Name:      "active_certificates",
+			Help:      "Number of distinct active downstream certificates.",
+		}),
+		downstreamExact: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "downstream_tls",
+			Name:      "exact_bindings",
+			Help:      "Number of active exact downstream SNI bindings.",
+		}),
+		downstreamWildcard: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "gateway",
+			Subsystem: "downstream_tls",
+			Name:      "wildcard_bindings",
+			Help:      "Number of active wildcard downstream SNI bindings.",
+		}),
+		now: time.Now,
 		liveEndpoints: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "gateway",
 			Subsystem: "upstream",
@@ -197,28 +230,45 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 			Buckets:   prometheus.DefBuckets,
 		}),
 	}
+	telemetry.downstreamExpiry = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace: "gateway",
+		Subsystem: "downstream_tls",
+		Name:      "earliest_expiry_seconds",
+		Help:      "Seconds until the earliest active downstream certificate expires.",
+	}, func() float64 {
+		expiresAt := telemetry.downstreamExpiryUnixNano.Load()
+		if expiresAt == 0 {
+			return 0
+		}
+		return max(0, time.Unix(0, expiresAt).Sub(telemetry.now()).Seconds())
+	})
 	for name, collector := range map[string]prometheus.Collector{
-		"active revision":           telemetry.activeRevision,
-		"snapshot apply duration":   telemetry.snapshotApplyDuration,
-		"snapshot apply total":      telemetry.snapshotApplyTotal,
-		"compiled routes":           telemetry.compiledRoutes,
-		"compiled services":         telemetry.compiledServices,
-		"compiled plugins":          telemetry.compiledPlugins,
-		"live endpoints":            telemetry.liveEndpoints,
-		"live transports":           telemetry.liveTransports,
-		"live selection states":     telemetry.liveSelectionStates,
-		"retired snapshots":         telemetry.retiredSnapshots,
-		"registry resources":        telemetry.registryResources,
-		"registry rollbacks":        telemetry.registryRollbacks,
-		"transport cleanup":         telemetry.transportCleanup,
-		"TLS handshakes":            tlsHandshake,
-		"TLS failures":              tlsFailures,
-		"transport generations":     transportLifecycle,
-		"WebSocket handshakes":      webSocketHandshakes,
-		"WebSocket active tunnels":  telemetry.webSocketActive,
-		"WebSocket tunnel closes":   webSocketClosed,
-		"WebSocket tunnel duration": telemetry.webSocketDuration,
-		"WebSocket bytes":           webSocketBytes,
+		"active revision":              telemetry.activeRevision,
+		"snapshot apply duration":      telemetry.snapshotApplyDuration,
+		"snapshot apply total":         telemetry.snapshotApplyTotal,
+		"compiled routes":              telemetry.compiledRoutes,
+		"compiled services":            telemetry.compiledServices,
+		"compiled plugins":             telemetry.compiledPlugins,
+		"downstream certificates":      telemetry.downstreamCertificates,
+		"downstream exact bindings":    telemetry.downstreamExact,
+		"downstream wildcard bindings": telemetry.downstreamWildcard,
+		"downstream earliest expiry":   telemetry.downstreamExpiry,
+		"downstream selections":        downstreamSelections,
+		"live endpoints":               telemetry.liveEndpoints,
+		"live transports":              telemetry.liveTransports,
+		"live selection states":        telemetry.liveSelectionStates,
+		"retired snapshots":            telemetry.retiredSnapshots,
+		"registry resources":           telemetry.registryResources,
+		"registry rollbacks":           telemetry.registryRollbacks,
+		"transport cleanup":            telemetry.transportCleanup,
+		"TLS handshakes":               tlsHandshake,
+		"TLS failures":                 tlsFailures,
+		"transport generations":        transportLifecycle,
+		"WebSocket handshakes":         webSocketHandshakes,
+		"WebSocket active tunnels":     telemetry.webSocketActive,
+		"WebSocket tunnel closes":      webSocketClosed,
+		"WebSocket tunnel duration":    telemetry.webSocketDuration,
+		"WebSocket bytes":              webSocketBytes,
 	} {
 		if err := registry.Register(collector); err != nil {
 			return nil, fmt.Errorf("register %s metric: %w", name, err)
@@ -231,6 +281,9 @@ func New(requestMetricsEnabled, profilingEnabled bool) (*Telemetry, error) {
 					tlsHandshake.WithLabelValues(result, mode, protocol)
 			}
 		}
+	}
+	for index, selection := range []string{"exact", "wildcard", "default", "error"} {
+		telemetry.downstreamSelections[index] = downstreamSelections.WithLabelValues(selection)
 	}
 	for classIndex, class := range []string{"trust", "hostname", "client_identity", "protocol", "handshake"} {
 		telemetry.tlsFailures[classIndex] = tlsFailures.WithLabelValues(class)
@@ -374,8 +427,25 @@ func (t *Telemetry) SnapshotApplied(stats gatewayruntime.Stats) {
 	t.compiledRoutes.Set(float64(stats.RouteCount))
 	t.compiledServices.Set(float64(stats.ServiceCount))
 	t.compiledPlugins.Set(float64(stats.PluginCount))
+	t.downstreamCertificates.Set(float64(stats.DownstreamCertificateCount))
+	t.downstreamExact.Set(float64(stats.DownstreamExactCount))
+	t.downstreamWildcard.Set(float64(stats.DownstreamWildcardCount))
+	if stats.DownstreamEarliestExpiry.IsZero() {
+		t.downstreamExpiryUnixNano.Store(0)
+	} else {
+		t.downstreamExpiryUnixNano.Store(stats.DownstreamEarliestExpiry.UnixNano())
+	}
 	t.snapshotApplyDuration.Observe(stats.BuildDuration.Seconds())
 	t.snapshotApplyTotal.WithLabelValues("applied", "", "").Inc()
+}
+
+// DownstreamTLSSelection increments one pre-bound bounded selection series.
+func (t *Telemetry) DownstreamTLSSelection(selection downstreamtls.Selection) {
+	index, ok := downstreamTLSSelectionIndex(selection)
+	if !ok {
+		return
+	}
+	t.downstreamSelections[index].Inc()
 }
 
 // SnapshotRejected observes build duration and increments the rejected counter
@@ -479,6 +549,21 @@ func tlsResultIndex(result string) (int, bool) {
 		return 0, true
 	case "failure":
 		return 1, true
+	default:
+		return 0, false
+	}
+}
+
+func downstreamTLSSelectionIndex(selection downstreamtls.Selection) (int, bool) {
+	switch selection {
+	case downstreamtls.SelectionExact:
+		return 0, true
+	case downstreamtls.SelectionWildcard:
+		return 1, true
+	case downstreamtls.SelectionDefault:
+		return 2, true
+	case downstreamtls.SelectionError:
+		return 3, true
 	default:
 		return 0, false
 	}

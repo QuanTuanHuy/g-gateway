@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
 	gatewayruntime "github.com/QuanTuanHuy/g-gateway/internal/runtime"
@@ -237,6 +238,54 @@ func TestSnapshotObserverExportsBoundedRuntimeMetrics(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("metrics contain forbidden high-cardinality value %q:\n%s", forbidden, body)
 		}
+	}
+}
+
+func TestDownstreamTLSMetricsRemainBoundedAndExpiryDecays(t *testing.T) {
+	telemetry, err := New(false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	telemetry.now = func() time.Time { return now }
+	telemetry.SnapshotApplied(gatewayruntime.Stats{
+		DownstreamCertificateCount: 3,
+		DownstreamExactCount:       2,
+		DownstreamWildcardCount:    1,
+		DownstreamEarliestExpiry:   now.Add(time.Hour),
+	})
+	for _, selection := range []downstreamtls.Selection{
+		downstreamtls.SelectionExact,
+		downstreamtls.SelectionWildcard,
+		downstreamtls.SelectionDefault,
+		downstreamtls.SelectionError,
+		"hostname-or-certificate-id",
+	} {
+		telemetry.DownstreamTLSSelection(selection)
+	}
+
+	body := scrapeMetrics(t, telemetry.AdminHandler())
+	for _, fragment := range []string{
+		`gateway_downstream_tls_active_certificates 3`,
+		`gateway_downstream_tls_exact_bindings 2`,
+		`gateway_downstream_tls_wildcard_bindings 1`,
+		`gateway_downstream_tls_earliest_expiry_seconds 3600`,
+		`gateway_downstream_tls_certificate_selections_total{selection="exact"} 1`,
+		`gateway_downstream_tls_certificate_selections_total{selection="wildcard"} 1`,
+		`gateway_downstream_tls_certificate_selections_total{selection="default"} 1`,
+		`gateway_downstream_tls_certificate_selections_total{selection="error"} 1`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("metrics do not contain %q:\n%s", fragment, body)
+		}
+	}
+	if strings.Contains(body, "hostname-or-certificate-id") {
+		t.Fatalf("metrics contain forbidden identity:\n%s", body)
+	}
+	now = now.Add(30 * time.Minute)
+	body = scrapeMetrics(t, telemetry.AdminHandler())
+	if !strings.Contains(body, `gateway_downstream_tls_earliest_expiry_seconds 1800`) {
+		t.Fatalf("expiry gauge did not decay:\n%s", body)
 	}
 }
 

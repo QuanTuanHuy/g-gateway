@@ -38,3 +38,12 @@ func (p *StaticProvider) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate,
 	}
 	return &p.certificate, nil
 }
+
+// Select returns the static certificate with the default selection class.
+func (p *StaticProvider) Select(hello *tls.ClientHelloInfo) (*tls.Certificate, Selection, error) {
+	certificate, err := p.GetCertificate(hello)
+	if err != nil {
+		return nil, SelectionError, err
+	}
+	return certificate, SelectionDefault, nil
+}
