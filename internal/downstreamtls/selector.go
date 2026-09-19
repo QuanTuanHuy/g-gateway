@@ -3,6 +3,7 @@ package downstreamtls
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"time"
@@ -238,11 +239,16 @@ func certificateCoversHost(certificate *tls.Certificate, canonical string, wildc
 	}
 	for _, dnsName := range certificate.Leaf.DNSNames {
 		suffix, isWildcard, err := normalizeBindingHost(dnsName)
-		if err == nil && isWildcard && suffix == canonical {
+		if err == nil && isWildcard && suffix == canonical && wildcardSANVerifies(dnsName, canonical) {
 			return true
 		}
 	}
 	return false
+}
+
+func wildcardSANVerifies(pattern, suffix string) bool {
+	certificate := &x509.Certificate{DNSNames: []string{pattern}}
+	return certificate.VerifyHostname("a."+suffix) == nil
 }
 
 func configError(code, resourceID, field string, cause error) *ConfigError {

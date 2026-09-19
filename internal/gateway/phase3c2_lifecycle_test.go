@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,12 +46,16 @@ func TestPhase3C2ConcurrentHandshakeRotationReturnsToSteadyState(t *testing.T) {
 
 	stop := make(chan struct{})
 	errorsSeen := make(chan error, 1)
+	ready := make(chan struct{}, 4)
+	progress := make(chan struct{}, 1)
+	var successfulHandshakes atomic.Uint64
 	var workers sync.WaitGroup
 	for range 4 {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			dialer := &net.Dialer{Timeout: time.Second}
+			reportedReady := false
 			for {
 				select {
 				case <-stop:
@@ -77,9 +82,34 @@ func TestPhase3C2ConcurrentHandshakeRotationReturnsToSteadyState(t *testing.T) {
 					recordPhase3C2WorkerError(errorsSeen, fmt.Errorf("TLS handshake returned serial %d", serial))
 					return
 				}
+				successfulHandshakes.Add(1)
+				if !reportedReady {
+					ready <- struct{}{}
+					reportedReady = true
+				}
+				select {
+				case progress <- struct{}{}:
+				default:
+				}
 			}
 		}()
 	}
+	var stopOnce sync.Once
+	stopWorkers := func() {
+		stopOnce.Do(func() { close(stop) })
+		workers.Wait()
+	}
+	defer stopWorkers()
+	for range 4 {
+		select {
+		case <-ready:
+		case err := <-errorsSeen:
+			t.Fatal(err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("TLS workers did not complete their initial handshakes")
+		}
+	}
+	handshakeCheckpoint := successfulHandshakes.Load()
 
 	for revision := uint64(2); revision <= 101; revision++ {
 		rotated := model.CloneResourceSet(resources)
@@ -88,13 +118,18 @@ func TestPhase3C2ConcurrentHandshakeRotationReturnsToSteadyState(t *testing.T) {
 			rotated.Certificates[0] = first
 		}
 		if err := instance.Apply(revision, rotated); err != nil {
-			close(stop)
-			workers.Wait()
 			t.Fatalf("Apply(%d) error = %v", revision, err)
 		}
+		if revision == 2 {
+			handshakeCheckpoint = successfulHandshakes.Load()
+		}
+		if revision == 51 || revision == 101 {
+			handshakeCheckpoint = waitForPhase3C2HandshakeProgress(
+				t, errorsSeen, progress, &successfulHandshakes, handshakeCheckpoint,
+			)
+		}
 	}
-	close(stop)
-	workers.Wait()
+	stopWorkers()
 	select {
 	case err := <-errorsSeen:
 		t.Fatal(err)
@@ -111,6 +146,30 @@ func TestPhase3C2ConcurrentHandshakeRotationReturnsToSteadyState(t *testing.T) {
 	stats := instance.manager.UpstreamStats()
 	if stats.RetiredPlanSets != 0 || stats.LiveTunnelLeases != 0 {
 		t.Fatalf("registry did not reach steady state: %+v", stats)
+	}
+}
+
+func waitForPhase3C2HandshakeProgress(
+	t *testing.T,
+	errorsSeen <-chan error,
+	progress <-chan struct{},
+	successfulHandshakes *atomic.Uint64,
+	previous uint64,
+) uint64 {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		if current := successfulHandshakes.Load(); current > previous {
+			return current
+		}
+		select {
+		case err := <-errorsSeen:
+			t.Fatal(err)
+		case <-progress:
+		case <-timer.C:
+			t.Fatalf("TLS handshakes did not progress beyond %d during rotation", previous)
+		}
 	}
 }
 

@@ -308,7 +308,7 @@ func TestSelectorUsesExactBeforeWildcardAndFallsBackToDefault(t *testing.T) {
 
 - [ ] **Step 2: Write failing selector rejection tests**
 
-Use table cases for nil policy, missing default, missing binding reference, empty hosts, exact conflict after case/trailing-dot normalization, wildcard conflict, invalid wildcard shape, exact SAN mismatch, wildcard SAN mismatch, Common-Name-only certificate, not-yet-valid leaf, expired leaf, nil material, duplicate material IDs, and 10,001 aggregate hosts. Assert exact codes from this closed set:
+Use table cases for nil policy, missing default, missing binding reference, empty hosts, exact conflict after case/trailing-dot normalization, wildcard conflict, invalid wildcard shape, exact SAN mismatch, wildcard SAN mismatch, a trailing-dot wildcard SAN rejected by client verification semantics, Common-Name-only certificate, not-yet-valid leaf, expired leaf, nil material, duplicate material IDs, and 10,001 aggregate hosts. Assert exact codes from this closed set:
 
 ```go
 const (
@@ -372,7 +372,7 @@ type SelectingCertificateProvider interface {
 }
 ```
 
-Index certificates by ID, clone each selected `tls.Certificate` exactly once with `TLSCertificate`, validate `Leaf`, validity, and SANs before inserting, and deduplicate `CertificateCount` by referenced certificate ID. For exact SAN validation call `Leaf.VerifyHostname(canonical)`. For wildcard bindings inspect `Leaf.DNSNames`, canonicalize SAN wildcard values, and require the same wildcard suffix.
+Index certificates by ID, clone each selected `tls.Certificate` exactly once with `TLSCertificate`, validate `Leaf`, validity, and SANs before inserting, and deduplicate `CertificateCount` by referenced certificate ID. For exact SAN validation call `Leaf.VerifyHostname(canonical)`. Normalize configured wildcard bindings for index identity, but do not treat SAN normalization alone as proof of coverage. For wildcard bindings inspect `Leaf.DNSNames`, require the same canonical wildcard suffix, and require that the individual SAN pattern also accepts a representative one-label hostname under Go's `x509.VerifyHostname` semantics; for example, reject a trailing-dot SAN such as `*.example.com.`.
 
 Selection must use normalized ClientHello SNI, exact lookup, then exactly one first-label removal for wildcard lookup, then default. Invalid ClientHello names return default without an error. Nil/empty selector returns `SelectionError` and `errCertificateUnavailable`.
 

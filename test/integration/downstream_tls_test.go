@@ -109,6 +109,28 @@ func TestRejectedDownstreamTLSRotationKeepsLastGood(t *testing.T) {
 	}
 }
 
+func TestRejectedTrailingDotWildcardSANRotationKeepsLastGood(t *testing.T) {
+	now := time.Now()
+	defaultCertificate := newTestCertificate(t, "default", 1, []string{"default.example"}, now)
+	wildcardCertificate := newTestCertificate(t, "wildcard", 3, []string{"*.example.com"}, now)
+	instance, addresses, resources := startDownstreamTLSGateway(t, []testCertificate{defaultCertificate, wildcardCertificate})
+	pool := certificatePool(defaultCertificate, wildcardCertificate)
+	if got := dialDownstreamTLSSerial(t, addresses.HTTPS, "shop.example.com", pool, nil); got != 3 {
+		t.Fatalf("initial peer serial = %d, want 3", got)
+	}
+
+	invalid := newTestCertificate(t, "wildcard", 5, []string{"*.example.com."}, now)
+	resources.Certificates[1] = invalid.Material
+	err := instance.Apply(2, resources)
+	var buildErr *gatewayruntime.BuildError
+	if !errors.As(err, &buildErr) || buildErr.Code != downstreamtls.CodeCertificateHostnameMismatch {
+		t.Fatalf("Apply() error = %v, want %s", err, downstreamtls.CodeCertificateHostnameMismatch)
+	}
+	if got := dialDownstreamTLSSerial(t, addresses.HTTPS, "shop.example.com", pool, nil); got != 3 {
+		t.Fatalf("peer serial after rejected update = %d, want 3", got)
+	}
+}
+
 func TestDownstreamTLSSessionResumptionIsDisabled(t *testing.T) {
 	now := time.Now()
 	certificate := newTestCertificate(t, "default", 1, []string{"gateway.example"}, now)

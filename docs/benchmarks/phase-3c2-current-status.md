@@ -37,6 +37,8 @@ This is developer-machine evidence, not production certification or APISIX parit
 
 The profiles exercised 100 consecutive certificate rotations during concurrent real TLS handshakes, last-good retention after a rejected update, disabled session resumption, continuity of established HTTP/1.1, HTTP/2, and WebSocket connections, new-connection certificate selection, and return to zero retired plan sets and tunnel leases.
 
+Independent review found that canonicalizing a certificate SAN such as `*.example.com.` could admit a leaf that Go clients reject. The final implementation additionally verifies the individual wildcard SAN with `x509.VerifyHostname`; unit and live-Apply regressions prove rejection and last-good retention. The concurrent lifecycle test now requires all four workers to complete an initial handshake and requires further handshake progress in both halves of the 100-rotation run.
+
 Final repository gates passed on the completed tree:
 
 ```text
@@ -56,7 +58,7 @@ Both 30-second fuzz gates passed without a panic or invariant failure:
 | Target | Executions | New interesting inputs |
 | --- | ---: | ---: |
 | `FuzzNormalizeBindingHost` | 1,931,109 | 52 |
-| `FuzzCompileSelector` | 190,641 | 53 |
+| `FuzzCompileSelector` | 126,619 | 8 |
 
 Commands:
 
@@ -79,17 +81,17 @@ Lookup samples in ns/op:
 
 | Benchmark | Sample 1 | Sample 2 | Sample 3 | Sample 4 | Sample 5 | Median | B/op | Allocs/op |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Default | 43.91 | 206.3 | 238.0 | 210.5 | 241.0 | 210.5 | 0 | 0 |
-| Exact | 235.5 | 250.4 | 224.9 | 227.5 | 255.7 | 235.5 | 0 | 0 |
-| Wildcard | 282.7 | 292.2 | 324.1 | 323.0 | 270.6 | 292.2 | 0 | 0 |
+| Default | 45.99 | 199.5 | 202.1 | 240.1 | 247.6 | 202.1 | 0 | 0 |
+| Exact | 284.9 | 279.4 | 266.1 | 256.9 | 268.5 | 268.5 | 0 | 0 |
+| Wildcard | 432.9 | 454.6 | 425.0 | 443.2 | 476.8 | 443.2 | 0 | 0 |
 
 Selector compilation samples:
 
 | Measurement | Sample 1 | Sample 2 | Sample 3 | Sample 4 | Sample 5 | Median |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ns/op | 284,759,500 | 333,516,200 | 268,160,820 | 223,471,180 | 269,678,050 | 269,678,050 |
-| B/op | 51,328,424 | 51,328,396 | 51,328,412 | 51,328,390 | 51,328,452 | 51,328,412 |
-| allocs/op | 1,050,399 | 1,050,399 | 1,050,399 | 1,050,399 | 1,050,399 | 1,050,399 |
+| ns/op | 378,921,300 | 309,889,725 | 328,289,275 | 448,535,633 | 367,046,125 | 367,046,125 |
+| B/op | 51,328,480 | 51,328,536 | 51,328,536 | 51,328,368 | 51,328,620 | 51,328,536 |
+| allocs/op | 1,050,400 | 1,050,400 | 1,050,400 | 1,050,399 | 1,050,401 | 1,050,400 |
 
 All lookup cases satisfied the zero-allocation invariant. Compile time and allocation observations are developer-host measurements, not portable pass/fail thresholds.
 
