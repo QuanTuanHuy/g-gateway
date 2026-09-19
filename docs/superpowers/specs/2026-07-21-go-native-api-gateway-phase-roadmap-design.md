@@ -228,12 +228,13 @@ Chứng minh flow quản trị hoàn chỉnh từ Admin API đến request dùng
 ### 8.2. Phạm vi
 
 - gateway-cp executable.
-- REST resources: Route, Service, Upstream, PluginConfig, Certificate và SecretRef tối thiểu.
+- REST resources: Route, Service, Upstream, PluginConfig, Certificate, SecretRef, TrustBundle và singleton DownstreamTLS.
 - Schema/reference validation.
 - Optimistic concurrency và multi-resource transaction.
 - Etcd persistence.
 - gRPC distribution handshake dùng mTLS.
 - Full snapshot distribution.
+- One in-flight snapshot per DP; subsequent delivery targets the latest committed revision and may skip intermediate revisions.
 - DP shadow build, atomic activate và ACK/NACK.
 - Rollout status cơ bản.
 - Signed và encrypted last-known-good snapshot.
@@ -241,7 +242,7 @@ Chứng minh flow quản trị hoàn chỉnh từ Admin API đến request dùng
 
 ### 8.3. Không bao gồm
 
-- Delta distribution và coalescing.
+- Delta distribution and high-rate coalescing scheduling. Basic latest-revision skipping is included in Phase 4.
 - 1.000 DP scale gate.
 - Consumer và full authentication plugin set.
 - Multi-region control plane.
@@ -254,6 +255,12 @@ Chứng minh flow quản trị hoàn chỉnh từ Admin API đến request dùng
 - CP hoặc etcd outage không làm gián đoạn active traffic.
 - Connected healthy DP activation p99 không quá một giây ở integration scale của phase.
 - CP và DP có protocol/schema compatibility tests.
+
+### 8.5. Design handoff — 2026-09-20
+
+The [Phase 4 umbrella design](2026-09-20-phase-4-control-plane-design.md) records the agreed discussion decisions; written review is pending. Design may proceed now, but implementation starts only after Phase 3D is complete. Existing Phase 3 canonical evidence and deferred Phase 2 Task 16 requirements remain in force.
+
+Phase 4 is split into 4A configuration management, 4B distribution and activation, and 4C local recovery and integrated acceptance, each with a separate detailed specification and plan. It uses one global configuration revision shared by all DPs. Integration uses one active CP and three real DPs. Admin mTLS Reader/Operator roles, mounted-file SecretRefs, immutable encrypted snapshot storage, separate active/persisted revision status, and observational rollout define the initial scope. Multi-CP HA/failover remains Phase 5.
 
 ## 9. Phase 5 — Configuration distribution ở quy mô lớn
 
