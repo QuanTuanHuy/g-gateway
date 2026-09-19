@@ -104,6 +104,9 @@ type ResourceSet struct {
 	// Certificates contains immutable certificate-chain and private-key
 	// resources referenced by transport policies.
 	Certificates []*tlsmaterial.Certificate
+	// DownstreamTLS selects the default certificate and explicit SNI bindings.
+	// Nil preserves the legacy bootstrap certificate behavior.
+	DownstreamTLS *DownstreamTLSPolicy
 	// TrustBundles contains immutable CA resources referenced by transport
 	// policies.
 	TrustBundles []*tlsmaterial.TrustBundle
@@ -430,11 +433,12 @@ type UpstreamTLSPolicy struct {
 // retained by pointer.
 func CloneResourceSet(in ResourceSet) ResourceSet {
 	out := ResourceSet{
-		Routes:       make([]Route, len(in.Routes)),
-		Services:     make([]Service, len(in.Services)),
-		Upstreams:    make([]Upstream, len(in.Upstreams)),
-		Certificates: append([]*tlsmaterial.Certificate(nil), in.Certificates...),
-		TrustBundles: append([]*tlsmaterial.TrustBundle(nil), in.TrustBundles...),
+		Routes:        make([]Route, len(in.Routes)),
+		Services:      make([]Service, len(in.Services)),
+		Upstreams:     make([]Upstream, len(in.Upstreams)),
+		Certificates:  append([]*tlsmaterial.Certificate(nil), in.Certificates...),
+		DownstreamTLS: cloneDownstreamTLSPolicy(in.DownstreamTLS),
+		TrustBundles:  append([]*tlsmaterial.TrustBundle(nil), in.TrustBundles...),
 	}
 
 	for i := range in.Routes {
@@ -464,6 +468,21 @@ func CloneResourceSet(in ResourceSet) ResourceSet {
 		out.Upstreams[i].Retry = cloneRetryPolicy(in.Upstreams[i].Retry)
 	}
 
+	return out
+}
+
+func cloneDownstreamTLSPolicy(in *DownstreamTLSPolicy) *DownstreamTLSPolicy {
+	if in == nil {
+		return nil
+	}
+	out := &DownstreamTLSPolicy{
+		DefaultCertificateRef: in.DefaultCertificateRef,
+		SNIBindings:           make([]SNIBinding, len(in.SNIBindings)),
+	}
+	for index := range in.SNIBindings {
+		out.SNIBindings[index] = in.SNIBindings[index]
+		out.SNIBindings[index].Hosts = append([]string(nil), in.SNIBindings[index].Hosts...)
+	}
 	return out
 }
 

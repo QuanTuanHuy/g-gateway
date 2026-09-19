@@ -69,6 +69,18 @@ func TestStaticProviderRejectsUnavailableCertificate(t *testing.T) {
 	}
 }
 
+func TestStaticProviderSelectReportsBoundedClass(t *testing.T) {
+	certificateFile, privateKeyFile := writeProviderCertificate(t)
+	provider, err := LoadStatic(certificateFile, privateKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, selection, err := provider.Select(&tls.ClientHelloInfo{ServerName: "api.example"})
+	if err != nil || certificate == nil || selection != SelectionDefault {
+		t.Fatalf("Select() = (%v, %q, %v)", certificate, selection, err)
+	}
+}
+
 func writeProviderCertificate(t *testing.T) (string, string) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

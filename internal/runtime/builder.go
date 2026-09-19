@@ -1,8 +1,11 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
+	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
@@ -13,16 +16,26 @@ import (
 // Builder compiles validated canonical resources into immutable snapshots
 // using one plugin registry and a separately prepared upstream candidate.
 type Builder struct {
-	plugins     *plugin.Registry
-	beforeBuild func(uint64)
+	plugins             *plugin.Registry
+	legacyDownstreamTLS downstreamtls.CertificateProvider
+	beforeBuild         func(uint64)
 }
 
 // NewBuilder returns a Builder using plugins and rejects a nil registry.
 func NewBuilder(plugins *plugin.Registry) (*Builder, error) {
+	return NewBuilderWithCertificateProvider(plugins, nil)
+}
+
+// NewBuilderWithCertificateProvider returns a Builder with an optional
+// legacy certificate provider for revisions without a dynamic policy.
+func NewBuilderWithCertificateProvider(
+	plugins *plugin.Registry,
+	legacy downstreamtls.CertificateProvider,
+) (*Builder, error) {
 	if plugins == nil {
 		return nil, fmt.Errorf("plugin registry is required")
 	}
-	return &Builder{plugins: plugins}, nil
+	return &Builder{plugins: plugins, legacyDownstreamTLS: legacy}, nil
 }
 
 // Build clones and validates input, resolves references, compiles plugin chains
@@ -46,6 +59,35 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 			Field:    "upstreams",
 			Cause:    fmt.Errorf("upstream candidate is required"),
 		}
+	}
+
+	downstreamProvider := b.legacyDownstreamTLS
+	downstreamStats := downstreamtls.Stats{}
+	if resources.DownstreamTLS != nil {
+		selector, err := downstreamtls.Compile(resources.DownstreamTLS, resources.Certificates, time.Now())
+		if err != nil {
+			var configErr *downstreamtls.ConfigError
+			if errors.As(err, &configErr) {
+				return nil, &BuildError{
+					Code:         configErr.Code,
+					Stage:        StageValidate,
+					Revision:     revision,
+					ResourceKind: "certificate",
+					ResourceID:   configErr.ResourceID,
+					Field:        configErr.Field,
+					Cause:        configErr,
+				}
+			}
+			return nil, &BuildError{
+				Code:     "DOWNSTREAM_TLS_COMPILE_FAILED",
+				Stage:    StageValidate,
+				Revision: revision,
+				Field:    "downstream_tls",
+				Cause:    err,
+			}
+		}
+		downstreamProvider = selector
+		downstreamStats = selector.Stats()
 	}
 
 	services := make(map[string]model.Service, len(resources.Services))
@@ -141,15 +183,20 @@ func (b *Builder) Build(revision uint64, input model.ResourceSet, candidate *ups
 		}
 	}
 	return &Snapshot{
-		revision: revision,
-		router:   compiledRouter,
-		routes:   routes,
+		revision:      revision,
+		router:        compiledRouter,
+		routes:        routes,
+		downstreamTLS: downstreamProvider,
 		stats: Stats{
-			Revision:      revision,
-			RouteCount:    len(routes),
-			ServiceCount:  len(resources.Services),
-			UpstreamCount: len(resources.Upstreams),
-			PluginCount:   pluginCount,
+			Revision:                   revision,
+			RouteCount:                 len(routes),
+			ServiceCount:               len(resources.Services),
+			UpstreamCount:              len(resources.Upstreams),
+			PluginCount:                pluginCount,
+			DownstreamCertificateCount: downstreamStats.CertificateCount,
+			DownstreamExactCount:       downstreamStats.ExactCount,
+			DownstreamWildcardCount:    downstreamStats.WildcardCount,
+			DownstreamEarliestExpiry:   downstreamStats.EarliestExpiry,
 		},
 	}, nil
 }

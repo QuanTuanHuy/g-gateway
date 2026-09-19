@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuanTuanHuy/g-gateway/internal/downstreamtls"
 	"github.com/QuanTuanHuy/g-gateway/internal/model"
 	"github.com/QuanTuanHuy/g-gateway/internal/plugin"
 	"github.com/QuanTuanHuy/g-gateway/internal/requestctx"
+	"github.com/QuanTuanHuy/g-gateway/internal/tlsmaterial"
 	"github.com/QuanTuanHuy/g-gateway/internal/upstream"
 )
 
@@ -61,6 +64,69 @@ func TestBuilderResolvesServiceAndCompilesRoute(t *testing.T) {
 	}
 	if snapshot.Revision() != 7 {
 		t.Fatalf("Revision() = %d", snapshot.Revision())
+	}
+}
+
+func TestBuilderStoresCompiledDownstreamTLS(t *testing.T) {
+	resources := testResources()
+	resources.Certificates = []*tlsmaterial.Certificate{
+		runtimeTestCertificate(t, "default", 11, []string{"default.example"}),
+		runtimeTestCertificate(t, "exact", 12, []string{"api.example.com"}),
+	}
+	resources.DownstreamTLS = &model.DownstreamTLSPolicy{
+		DefaultCertificateRef: "default",
+		SNIBindings:           []model.SNIBinding{{CertificateRef: "exact", Hosts: []string{"api.example.com"}}},
+	}
+	builder := mustBuilder(t, resources.Upstreams)
+	snapshot, err := builder.Build(1, resources, mustCandidate(t, resources.Upstreams))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := snapshot.downstreamTLS.GetCertificate(&tls.ClientHelloInfo{ServerName: "api.example.com"})
+	if err != nil || certificate.Leaf == nil || certificate.Leaf.SerialNumber.Int64() != 12 {
+		t.Fatalf("downstream certificate = (%v, %v)", certificate, err)
+	}
+	if snapshot.stats.DownstreamCertificateCount != 2 || snapshot.stats.DownstreamExactCount != 1 {
+		t.Fatalf("snapshot TLS stats = %+v", snapshot.stats)
+	}
+}
+
+func TestBuilderMapsDownstreamTLSValidationError(t *testing.T) {
+	resources := testResources()
+	resources.Certificates = []*tlsmaterial.Certificate{
+		runtimeTestCertificate(t, "default", 11, []string{"default.example"}),
+		runtimeTestCertificate(t, "exact", 12, []string{"api.example.com"}),
+	}
+	resources.DownstreamTLS = &model.DownstreamTLSPolicy{
+		DefaultCertificateRef: "default",
+		SNIBindings:           []model.SNIBinding{{CertificateRef: "exact", Hosts: []string{"other.example.com"}}},
+	}
+	builder := mustBuilder(t, resources.Upstreams)
+	_, err := builder.Build(1, resources, mustCandidate(t, resources.Upstreams))
+	var buildErr *BuildError
+	if !errors.As(err, &buildErr) || buildErr.Code != downstreamtls.CodeCertificateHostnameMismatch ||
+		buildErr.Stage != StageValidate || buildErr.ResourceKind != "certificate" {
+		t.Fatalf("Build() error = %+v", err)
+	}
+}
+
+func TestBuilderUsesLegacyDownstreamCertificateProvider(t *testing.T) {
+	resources := testResources()
+	legacy := &runtimeTestCertificateProvider{certificate: runtimeTestCertificate(t, "legacy", 9, []string{"legacy.example"}).TLSCertificate()}
+	plugins, err := plugin.NewBuiltinRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := NewBuilderWithCertificateProvider(plugins, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := builder.Build(1, resources, mustCandidate(t, resources.Upstreams))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.downstreamTLS != legacy {
+		t.Fatal("snapshot did not retain legacy provider")
 	}
 }
 
