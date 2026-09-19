@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-20
 
-**Status:** Decisions agreed in discussion; written specification pending user review. No Phase 4 implementation or acceptance evidence is claimed.
+**Status:** Written umbrella specification approved by the user. No Phase 4 implementation or acceptance evidence is claimed.
 
 **Scope:** Umbrella architecture for Phase 4A, 4B, and 4C. Each slice requires a detailed specification and implementation plan.
 
@@ -203,6 +203,8 @@ Connected healthy DP activation p99 must be at most one second at the declared i
 Before measurement, 4C must freeze dataset counts and serialized size, update rate, warm-up, sample count, traffic load, host resources, toolchain, topology, and timing method. Report per-DP and aggregate distributions, failures, and skipped revisions separately. The baseline must include enough activations on each DP; burst tests cannot discard slow samples to pass it. This is a three-DP integration claim, not production certification or the Phase 5 scale claim.
 
 ## 12. Non-goals and review handoff
+
+The [Phase 4A configuration management specification](2026-09-20-phase-4a-configuration-management-design.md) now details Admin contracts, explicit material refresh and rollback, bounded mutation processing, encrypted artifact publication, retention, audit, and recovery. Its written review is pending; 4B and 4C retain their separate design boundaries.
 
 Excluded: multi-CP HA/failover, fleet targeting/quorum, delta delivery, 1,000-DP acceptance, automatic rollback, Admin OIDC, external secret managers/KMS, dynamic listeners, automatic certificate renewal, and new traffic authentication plugins.
 

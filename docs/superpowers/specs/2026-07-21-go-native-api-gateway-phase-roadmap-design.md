@@ -258,7 +258,7 @@ Chứng minh flow quản trị hoàn chỉnh từ Admin API đến request dùng
 
 ### 8.5. Design handoff — 2026-09-20
 
-The [Phase 4 umbrella design](2026-09-20-phase-4-control-plane-design.md) records the agreed discussion decisions; written review is pending. Design may proceed now, but implementation starts only after Phase 3D is complete. Existing Phase 3 canonical evidence and deferred Phase 2 Task 16 requirements remain in force.
+The [Phase 4 umbrella design](2026-09-20-phase-4-control-plane-design.md) has passed user review. The [Phase 4A configuration management specification](2026-09-20-phase-4a-configuration-management-design.md) is now drafted for written review. Design may proceed now, but implementation starts only after Phase 3D is complete. Existing Phase 3 canonical evidence and deferred Phase 2 Task 16 requirements remain in force.
 
 Phase 4 is split into 4A configuration management, 4B distribution and activation, and 4C local recovery and integrated acceptance, each with a separate detailed specification and plan. It uses one global configuration revision shared by all DPs. Integration uses one active CP and three real DPs. Admin mTLS Reader/Operator roles, mounted-file SecretRefs, immutable encrypted snapshot storage, separate active/persisted revision status, and observational rollout define the initial scope. Multi-CP HA/failover remains Phase 5.
 
