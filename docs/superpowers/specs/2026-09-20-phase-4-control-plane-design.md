@@ -204,11 +204,11 @@ Before measurement, 4C must freeze dataset counts and serialized size, update ra
 
 ## 12. Non-goals and review handoff
 
-The [Phase 4A configuration management specification](2026-09-20-phase-4a-configuration-management-design.md) now details Admin contracts, explicit material refresh and rollback, bounded mutation processing, encrypted artifact publication, retention, audit, and recovery. Its written review is pending; 4B and 4C retain their separate design boundaries.
+The [Phase 4A configuration management specification](2026-09-20-phase-4a-configuration-management-design.md) now details Admin contracts, explicit material refresh and rollback, bounded mutation processing, encrypted artifact publication, retention, audit, and recovery. Its written review is approved, and the [4A implementation plan](../plans/2026-09-20-phase-4a-configuration-management.md) defines the task sequence; 4B and 4C retain their separate design boundaries.
 
 Excluded: multi-CP HA/failover, fleet targeting/quorum, delta delivery, 1,000-DP acceptance, automatic rollback, Admin OIDC, external secret managers/KMS, dynamic listeners, automatic certificate renewal, and new traffic authentication plugins.
 
-The umbrella is intentionally decomposed. After written review, refine 4A's concrete API, material, publication, audit, retention, and size contracts first. Then refine 4B's signed wire/session contract and 4C's durability and frozen acceptance workload. Each slice receives its own reviewed specification before its implementation plan.
+The umbrella is intentionally decomposed. With 4A's specification approved and its plan written, the remaining design work is 4B's signed wire/session contract and 4C's durability and frozen acceptance workload. Each slice receives its own reviewed specification before its implementation plan.
 
 Phase 3D completion remains the implementation entry gate for every slice.
 

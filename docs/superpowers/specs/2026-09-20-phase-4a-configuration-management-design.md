@@ -2,7 +2,9 @@
 
 **Date:** 2026-09-20
 
-**Status:** Draft for written review. The umbrella and the 4A discussion decisions are approved; the additional concrete choices identified in section 2 require review as part of this document.
+**Status:** Written specification approved by the user on 2026-09-20, including the concrete choices identified in section 2. No implementation or acceptance evidence is claimed.
+
+**Plan:** [Phase 4A implementation plan](../plans/2026-09-20-phase-4a-configuration-management.md).
 
 **Parent:** [Phase 4 control plane design](2026-09-20-phase-4-control-plane-design.md).
 
@@ -27,7 +29,7 @@ All DPs ultimately receive one shared configuration. Single-resource CRUD uses t
 
 The discussion approved global decimal-string revisions, final-state validation, put/delete transactions, mandatory idempotency, pinned reads/cursors, explicit SecretRef refresh, rollback of historical material, revision creation for no-op content, bounded sequential mutation processing, staged artifacts with atomic manifest publication, per-artifact envelope encryption, separate audit of successes/failures, retention, startup/outage policy, and the baseline limits in section 12. The Admin endpoint layout is also approved.
 
-This draft supplies concrete choices needed to make those decisions implementable:
+The written specification supplies concrete choices needed to make those decisions implementable:
 
 - Managed resource and artifact field mapping, HTTP errors, and canonical request identity.
 - Stable mTLS principal extraction and a prefix ownership guard preventing accidental overlapping CP writers.
@@ -35,7 +37,7 @@ This draft supplies concrete choices needed to make those decisions implementabl
 - Pagination cursor encoding, audit retention, additional memory/storage budgets, and timeouts.
 - Exact recovery behavior for uncertain commits and expired idempotency records.
 
-These additions are proposals for this written review, not claims that they were individually approved in conversation. No placeholder requires an implementer to invent a policy.
+These additions were approved together in the written specification review; they were not individually approved during the earlier discussion. No placeholder requires an implementer to invent a policy.
 
 ## 3. Existing code and package boundaries
 
@@ -351,7 +353,7 @@ Build/CI checks when implementing: Go 1.26.5, formatting, staticcheck, revive, v
 
 ## 15. Review handoff
 
-After this written spec is approved, use writing-plans for the 4A implementation plan only. The plan must preserve the Phase 3D implementation gate, pin the tested etcd dependency/image, assign meaningful validation to each change, and keep process wiring thin. Approval of this document does not waive Phase 3D or authorize publication/deployment.
+The written spec is approved and the linked 4A implementation plan defines the task sequence. The plan preserves the Phase 3D implementation gate, selects exact etcd dependency/image versions for mandatory compatibility testing, assigns meaningful validation to each change, and keeps process wiring thin. Approval of this document does not waive Phase 3D or authorize publication/deployment.
 
 ## 16. Repository references
 
