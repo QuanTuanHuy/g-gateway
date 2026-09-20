@@ -2,7 +2,9 @@
 
 **Date:** 2026-09-20
 
-**Status:** Design approved in discussion; pending written-spec review. No implementation or acceptance evidence is claimed.
+**Status:** Written specification approved by the user on 2026-09-20. No implementation or acceptance evidence is claimed.
+
+**Plan:** [Phase 3D1 implementation plan](../plans/2026-09-20-phase-3d1-bounded-access-logging.md).
 
 **Roadmap parent:** [Go-native API gateway phase roadmap](2026-07-21-go-native-api-gateway-phase-roadmap-design.md).
 
@@ -92,7 +94,7 @@ Every emitted line is one JSON object with `schema` equal to `gateway.access/v1`
 | `route_id` | string | Matched route ID or empty |
 | `service_id` | string | Resolved service ID or empty |
 | `upstream_id` | string | Resolved upstream ID or empty |
-| `endpoint_id` | string | Stable selected endpoint identity or empty; never an endpoint URL |
+| `endpoint_id` | string | `sha256:<hex>` of the canonical selected endpoint identity, or empty; never the raw identity or endpoint URL |
 | `response_source` | string | `gateway`, `plugin`, `upstream`, or `websocket` |
 | `status` | integer | Final status actually committed; zero if none was sent |
 | `request_body_bytes` | uint64 | Body bytes actually read by the gateway |
