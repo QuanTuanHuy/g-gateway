@@ -8,7 +8,7 @@
 
 **Parent:** [Phase 4 control plane design](2026-09-20-phase-4-control-plane-design.md).
 
-**Implementation gate:** Phase 3D must be complete before Phase 4 implementation begins. This document neither implements a control plane nor claims benchmark, compatibility, or production acceptance.
+**Implementation gate:** [Phase 3D1 bounded access logging](2026-09-20-phase-3d1-bounded-access-logging-design.md) must be implementation-complete with its required CI evidence before Phase 4 executable-code work begins. Phase 3D2 remains a separate acceptance obligation. This document neither implements a control plane nor claims benchmark, compatibility, or production acceptance.
 
 ## 1. Outcome and scope
 
@@ -353,7 +353,7 @@ Build/CI checks when implementing: Go 1.26.5, formatting, staticcheck, revive, v
 
 ## 15. Review handoff
 
-The written spec is approved and the linked 4A implementation plan defines the task sequence. The plan preserves the Phase 3D implementation gate, selects exact etcd dependency/image versions for mandatory compatibility testing, assigns meaningful validation to each change, and keeps process wiring thin. Approval of this document does not waive Phase 3D or authorize publication/deployment.
+The written spec is approved and the linked 4A implementation plan defines the task sequence. The plan preserves the Phase 3D1 implementation-and-CI gate, selects exact etcd dependency/image versions for mandatory compatibility testing, assigns meaningful validation to each change, and keeps process wiring thin. Approval of this document does not waive Phase 3D2 acceptance obligations or authorize publication/deployment.
 
 ## 16. Repository references
 

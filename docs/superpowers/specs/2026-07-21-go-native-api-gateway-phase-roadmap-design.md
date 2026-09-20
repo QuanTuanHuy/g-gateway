@@ -165,7 +165,8 @@ Phase 3 được chia thành sáu sub-phase có design và acceptance độc l�
 3. [Phase 3C1 — upstream TLS/mTLS, HTTP/2/h2c và native gRPC pass-through](2026-07-30-phase-3c1-upstream-tls-protocol-design.md);
 4. [Phase 3C3 — WebSocket lifecycle](2026-07-31-phase-3c3-websocket-lifecycle-design.md), intentionally implemented before 3C2;
 5. [Phase 3C2 — downstream SNI certificate selection and rotation](2026-09-13-phase-3c2-downstream-sni-certificate-rotation-design.md);
-6. Phase 3D — bounded access logging, integrated resilience acceptance và APISIX comparison.
+6. [Phase 3D1 — bounded structured access logging](2026-09-20-phase-3d1-bounded-access-logging-design.md);
+7. Phase 3D2 — integrated resilience acceptance, reference-Linux evidence consolidation và APISIX comparison.
 
 ### 7.1. Mục tiêu
 
@@ -215,7 +216,7 @@ Phase 3C3 ở trạng thái `implementation complete; canonical WebSocket eviden
 
 Phase 3C2 ở trạng thái `implementation complete; canonical downstream TLS evidence pending`. Strict v1alpha7, immutable default/exact/wildcard SNI selector, SAN/validity/conflict validation, atomic snapshot-coupled rotation, last-known-good rejection, disabled session resumption và bounded aggregate telemetry đã được triển khai. Local correctness, lifecycle repetition, 30-second fuzz và zero-allocation lookup benchmarks đã đạt; race trên CGO-capable host, reference-Linux evidence và APISIX comparison còn pending. [Phase 3C2 current status](../../benchmarks/phase-3c2-current-status.md) ghi evidence chi tiết.
 
-Phase 3C3 được triển khai có chủ đích trước Phase 3C2; cả hai hiện đã implementation-complete nhưng canonical evidence còn pending. Phase 3D tiếp tục sở hữu bounded access logging, integrated resilience acceptance và canonical integrated APISIX comparison. Không đánh dấu umbrella Phase 3C hoàn tất sớm.
+Phase 3C3 được triển khai có chủ đích trước Phase 3C2; cả hai hiện đã implementation-complete nhưng canonical evidence còn pending. Phase 3D được tách thành 3D1 bounded access logging và 3D2 integrated resilience/reference-Linux/APISIX evidence. Không đánh dấu umbrella Phase 3C hoặc toàn bộ Phase 3 hoàn tất sớm.
 
 Mọi sub-phase phải giữ router precedence và không được làm mất [deferred Phase 2 Task 16](../../benchmarks/phase-2-current-status.md#deferred-task-16).
 
@@ -258,7 +259,7 @@ Chứng minh flow quản trị hoàn chỉnh từ Admin API đến request dùng
 
 ### 8.5. Design handoff — 2026-09-20
 
-The [Phase 4 umbrella design](2026-09-20-phase-4-control-plane-design.md) has passed user review. The [Phase 4A configuration management specification](2026-09-20-phase-4a-configuration-management-design.md) has also passed user review, and its [implementation plan](../plans/2026-09-20-phase-4a-configuration-management.md) is written. Design may proceed now, but implementation starts only after Phase 3D is complete. Existing Phase 3 canonical evidence and deferred Phase 2 Task 16 requirements remain in force.
+The [Phase 4 umbrella design](2026-09-20-phase-4-control-plane-design.md) has passed user review. The [Phase 4A configuration management specification](2026-09-20-phase-4a-configuration-management-design.md) has also passed user review, and its [implementation plan](../plans/2026-09-20-phase-4a-configuration-management.md) is written. Design may proceed now, but executable-code implementation starts only after Phase 3D1 is implementation-complete with its required CI evidence. Phase 3D2, existing Phase 3 canonical evidence, and deferred Phase 2 Task 16 remain required for their own acceptance claims but do not block the start of 4A.
 
 Phase 4 is split into 4A configuration management, 4B distribution and activation, and 4C local recovery and integrated acceptance, each with a separate detailed specification and plan. It uses one global configuration revision shared by all DPs. Integration uses one active CP and three real DPs. Admin mTLS Reader/Operator roles, mounted-file SecretRefs, immutable encrypted snapshot storage, separate active/persisted revision status, and observational rollout define the initial scope. Multi-CP HA/failover remains Phase 5.
 
@@ -405,4 +406,4 @@ Phase 3C1 upstream TLS/mTLS, HTTP/2/h2c và native gRPC pass-through đã đư�
 
 Phase 3C3 WebSocket lifecycle đã được triển khai trước Phase 3C2 theo [design riêng](2026-07-31-phase-3c3-websocket-lifecycle-design.md); developer-machine evidence được ghi tại [Phase 3C3 current status](../../benchmarks/phase-3c3-current-status.md). Phase 3C2 downstream SNI selection/rotation cũng đã được triển khai theo [design riêng](2026-09-13-phase-3c2-downstream-sni-certificate-rotation-design.md); local evidence được ghi tại [Phase 3C2 current status](../../benchmarks/phase-3c2-current-status.md). Canonical Linux/race evidence của các sub-phase vẫn pending.
 
-Phase 3D là bước implementation tiếp theo và tiếp tục sở hữu bounded access logging, integrated resilience acceptance và APISIX comparison. Không coi developer-machine evidence của Phase 3C1, Phase 3C2 hoặc Phase 3C3 là APISIX parity hoặc production certification, và chưa đánh dấu umbrella Phase 3C hoàn tất.
+Phase 3D1 bounded access logging là bước implementation tiếp theo. Phase 3D2 tiếp tục sở hữu integrated resilience acceptance, reference-Linux evidence consolidation và APISIX comparison. Phase 4A chỉ được bắt đầu sau khi 3D1 implementation-complete với CI evidence; quyết định này không biến developer-machine evidence của Phase 3C1, Phase 3C2 hoặc Phase 3C3 thành APISIX parity hay production certification, và không đánh dấu umbrella Phase 3C hoặc toàn bộ Phase 3 hoàn tất.

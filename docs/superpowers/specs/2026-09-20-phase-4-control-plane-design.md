@@ -17,7 +17,7 @@ Admin mutation -> final-state validation -> resolve and seal snapshot
   -> encrypted local persistence and status update
 ```
 
-Design may proceed now. Phase 4 implementation starts only after Phase 3D is complete. Phase 3D owns bounded access logging, integrated resilience acceptance, and canonical integrated APISIX comparison. Existing Phase 3 evidence requirements and deferred Phase 2 Task 16 remain in force.
+Design may proceed now. Phase 4 executable-code implementation starts only after [Phase 3D1 bounded access logging](2026-09-20-phase-3d1-bounded-access-logging-design.md) is implementation-complete with its required CI evidence. Phase 3D2 owns integrated resilience acceptance, reference-Linux evidence consolidation, and canonical integrated APISIX comparison; those claims and deferred Phase 2 Task 16 remain in force without blocking the start of 4A.
 
 Initial integration uses one active CP, one etcd cluster, three real DP processes, and deterministic upstreams. Every DP receives the same global configuration. There are no configuration groups or fleet-wide atomic activation.
 
@@ -210,7 +210,7 @@ Excluded: multi-CP HA/failover, fleet targeting/quorum, delta delivery, 1,000-DP
 
 The umbrella is intentionally decomposed. With 4A's specification approved and its plan written, the remaining design work is 4B's signed wire/session contract and 4C's durability and frozen acceptance workload. Each slice receives its own reviewed specification before its implementation plan.
 
-Phase 3D completion remains the implementation entry gate for every slice.
+Phase 3D1 implementation completion with its required CI evidence is the executable-code entry gate for every Phase 4 slice. Phase 3D2 remains a separate acceptance obligation and is not waived by starting Phase 4.
 
 ## 13. References
 

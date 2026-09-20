@@ -14,7 +14,7 @@
 
 ## Global Constraints
 
-- Phase 3D must be complete before Phase 4 implementation begins. Record the accepted Phase 3D evidence and baseline commit before Task 1; approval of this plan does not waive that gate.
+- Phase 3D1 bounded access logging must be implementation-complete with its required CI evidence before Phase 4 executable-code work begins. Record the accepted 3D1 evidence and baseline commit before Task 1. Phase 3D2 remains a separate acceptance obligation and is not waived by this gate.
 - Preserve all standalone YAML versions through v1alpha7, validation/default/presence behavior, snapshot lease ownership and last-known-good activation.
 - Use Go 1.26.5. Do not upgrade existing direct dependencies or introduce an etcd server dependency into the production module.
 - One configuration domain, one active CP, one global uint64 revision encoded as a canonical decimal string in Admin JSON; initial revision "0", first commit "1".
@@ -56,7 +56,7 @@ Reductions must remain positive and internally consistent. Retention reductions 
 
 ## Execution gate and dependency pin
 
-Before changing executable code, read [README](../../../README.md), [repository instructions](../../../AGENTS.md), [roadmap](../specs/2026-07-21-go-native-api-gateway-phase-roadmap-design.md), the approved spec and Phase 3D acceptance evidence. The planning baseline is commit `422434f`; it is not evidence that Phase 3D is complete. If the gate is not met, stop execution, retain this plan, and report the missing evidence. Reconcile paths against the completed Phase 3D baseline without broadening scope.
+Before changing executable code, read [README](../../../README.md), [repository instructions](../../../AGENTS.md), [roadmap](../specs/2026-07-21-go-native-api-gateway-phase-roadmap-design.md), the approved spec, the [Phase 3D1 design](../specs/2026-09-20-phase-3d1-bounded-access-logging-design.md), and its completed CI evidence. The planning baseline is commit `422434f`; it is not evidence that Phase 3D1 is complete. If the 3D1 gate is not met, stop execution, retain this plan, and report the missing evidence. Reconcile paths against the completed 3D1 baseline without broadening scope.
 
 Pin `go.etcd.io/etcd/client/v3@v3.6.5`, matching `api/v3` and `client/pkg/v3`, and test image `gcr.io/etcd-development/etcd:v3.6.5`. This is a selected reproducible baseline, not a latest-release or tested-compatibility claim. The upstream client module declares Go 1.24 and gRPC v1.71.1; the repository has Go 1.26.5 and gRPC v1.82.1. Metadata therefore permits the selected dependency floors, but compilation, module selection and real-server behavior must pass Task 7 before accepting compatibility. [Upstream client module](https://raw.githubusercontent.com/etcd-io/etcd/v3.6.5/client/v3/go.mod), [official release and image instructions](https://github.com/etcd-io/etcd/releases/tag/v3.6.5).
 
@@ -587,7 +587,7 @@ Expected: FAIL for the new assertion/contract; an unavailable etcd fixture is an
 
 - [ ] **Step 3: Implement the specified behavior.**
 
-After the Phase 3D gate, install only the selected client dependency:
+After the Phase 3D1 implementation-and-CI gate, install only the selected client dependency:
 
 ```text
 go get go.etcd.io/etcd/client/v3@v3.6.5
@@ -1147,7 +1147,7 @@ CI uses a step-local `GATEWAY_TEST_ETCD: "1"` environment entry. Record the exac
 | 12: every limit/deadline | 1, 4–10, 12–17 | Boundary tables, admission bounds, timed cancellation and measured lifecycle |
 | 13: stable error mappings | 1, 9, 12, 14–16 | Status/code table, deterministic safe fields and no raw error disclosure |
 | 14: verification and exit criteria | 17–18 | Full CI + real etcd + resource bounds, no activation-latency claim |
-| 15–16: handoff/references | 18 | Phase 3D gate, exact pins, usable bounded internal export |
+| 15–16: handoff/references | 18 | Phase 3D1 gate, exact pins, usable bounded internal export |
 
 Review milestones are: Tasks 1–6 (portable pure contracts), Tasks 7–10 (durability protocol), Tasks 11–15 (application/API behavior), Tasks 16–18 (process/acceptance). A milestone is not permission to skip its individual tests. Do not parallelize store state-machine changes that depend on unreviewed contracts.
 
@@ -1165,6 +1165,6 @@ Review milestones are: Tasks 1–6 (portable pure contracts), Tasks 7–10 (dura
 
 ## Execution handoff
 
-The plan is ready for task-by-task execution after the Phase 3D gate is met. At that point the execution options are (1) subagent-driven work with review between tasks, or (2) inline execution using executing-plans and milestone checkpoints. Select an execution mode when starting implementation; writing this plan does not start it.
+The plan is ready for task-by-task execution after the Phase 3D1 implementation-and-CI gate is met. At that point the execution options are (1) subagent-driven work with review between tasks, or (2) inline execution using executing-plans and milestone checkpoints. Select an execution mode when starting implementation; writing this plan does not start it.
 
 Planning verification is documentation-only. Code blocks and future test commands are not claims that code exists or tests have passed.

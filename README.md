@@ -32,7 +32,7 @@ The accepted architecture and phased roadmap are documented in [`docs/architectu
 - Separate admin listener with health, readiness, bounded runtime/upstream Prometheus metrics, and opt-in pprof.
 - Graceful SIGINT/SIGTERM drain with readiness removed before traffic shutdown, request leases drained, and unowned pools closed.
 
-Current exclusions include a public configuration update surface, automatic certificate renewal/file watching, circuit breaking, regex routing, authentication/rate limiting, RFC 8441/CONNECT, access logging, and distributed control-plane behavior. Phase 3D owns bounded access logging plus integrated resilience acceptance and APISIX comparison; the umbrella Phase 3C remains incomplete until its canonical gates and Phase 3D are finished.
+Current exclusions include a public configuration update surface, automatic certificate renewal/file watching, circuit breaking, regex routing, authentication/rate limiting, RFC 8441/CONNECT, access logging, and distributed control-plane behavior. Phase 3D1 owns bounded access logging; Phase 3D2 owns integrated resilience acceptance and APISIX comparison. The umbrella Phase 3C and the whole of Phase 3 remain incomplete until their canonical gates and Phase 3D2 are finished. Phase 4 executable-code work remains blocked until Phase 3D1 is implementation-complete with required CI evidence.
 
 ## Repository layout
 
