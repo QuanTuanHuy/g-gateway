@@ -122,6 +122,133 @@ func TestPhase3C3ExampleConfigurationLoads(t *testing.T) {
 	}
 }
 
+func TestLoadV1Alpha8AccessLogDefaults(t *testing.T) {
+	for _, accessLog := range []string{
+		"    enabled: true\n",
+		"    enabled: true\n    queue_capacity: 0\n",
+	} {
+		bootstrap, _, err := Decode(strings.NewReader(validV8Document(t, accessLog)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bootstrap.Telemetry.AccessLog.Enabled ||
+			bootstrap.Telemetry.AccessLog.QueueCapacity != DefaultAccessLogQueueCapacity {
+			t.Fatalf("access log = %+v", bootstrap.Telemetry.AccessLog)
+		}
+	}
+}
+
+func TestLoadV1Alpha8AccessLogExplicitCapacity(t *testing.T) {
+	for _, capacity := range []int{1, MaxAccessLogQueueCapacity} {
+		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
+			bootstrap, _, err := Decode(strings.NewReader(validV8Document(t, fmt.Sprintf(
+				"    enabled: true\n    queue_capacity: %d\n",
+				capacity,
+			))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := bootstrap.Telemetry.AccessLog.QueueCapacity; got != capacity {
+				t.Fatalf("queue capacity = %d, want %d", got, capacity)
+			}
+		})
+	}
+}
+
+func TestLoadV1Alpha8RejectsInvalidAccessLog(t *testing.T) {
+	tests := map[string]string{
+		"negative capacity":       "    enabled: true\n    queue_capacity: -1\n",
+		"capacity above maximum":  "    enabled: true\n    queue_capacity: 65537\n",
+		"disabled capacity":       "    enabled: false\n    queue_capacity: 1\n",
+		"unknown field":           "    enabled: true\n    unexpected: true\n",
+		"duplicate field":         "    enabled: true\n    enabled: false\n",
+		"invalid enabled scalar":  "    enabled: invalid\n",
+		"invalid capacity scalar": "    enabled: true\n    queue_capacity: invalid\n",
+	}
+	for name, accessLog := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := Decode(strings.NewReader(validV8Document(t, accessLog))); err == nil {
+				t.Fatal("Decode succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestLoadV1Alpha8RejectsMultipleDocumentsAndUnsupportedVersion(t *testing.T) {
+	tests := map[string]string{
+		"multiple documents":  validV8Document(t, "    enabled: true\n") + "---\napi_version: gateway/v1alpha8\n",
+		"unsupported version": strings.Replace(validV8Document(t, "    enabled: true\n"), "gateway/v1alpha8", "gateway/v1alpha9", 1),
+	}
+	for name, document := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := Decode(strings.NewReader(document)); err == nil {
+				t.Fatal("Decode succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestLoadLegacyVersionsKeepAccessLogDisabled(t *testing.T) {
+	certificateFile, privateKeyFile := writeTLSFiles(t)
+	documents := []string{
+		validDocument(certificateFile, privateKeyFile),
+		validV2Document(certificateFile, privateKeyFile),
+		validV3Document(t),
+		strings.Replace(validV3Document(t), "gateway/v1alpha3", "gateway/v1alpha4", 1),
+		validV5Document(t),
+		strings.Replace(validV5Document(t), "gateway/v1alpha5", "gateway/v1alpha6", 1),
+		validV7Document(t),
+	}
+	for index, document := range documents {
+		t.Run(fmt.Sprintf("v1alpha%d", index+1), func(t *testing.T) {
+			bootstrap, _, err := Decode(strings.NewReader(document))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bootstrap.Telemetry.AccessLog != (AccessLogConfig{}) {
+				t.Fatalf("access log = %+v", bootstrap.Telemetry.AccessLog)
+			}
+		})
+	}
+}
+
+func TestLoadLegacyV1Alpha7RejectsAccessLog(t *testing.T) {
+	document := strings.Replace(
+		validV7Document(t),
+		"  profiling_enabled: false\n",
+		"  profiling_enabled: false\n  access_log:\n    enabled: true\n",
+		1,
+	)
+	if _, _, err := Decode(strings.NewReader(document)); err == nil {
+		t.Fatal("Decode succeeded, want unknown-field error")
+	}
+}
+
+func TestPhase3D1ExampleConfigurationLoads(t *testing.T) {
+	document, err := os.ReadFile(filepath.Join("..", "..", "configs", "phase3d1.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateFile, privateKeyFile, caFile := writeV5MaterialFiles(t)
+	rendered := string(document)
+	for mounted, local := range map[string]string{
+		"/certs/server.crt":        filepath.ToSlash(certificateFile),
+		"/certs/server.key":        filepath.ToSlash(privateKeyFile),
+		"/secrets/internal-ca.pem": filepath.ToSlash(caFile),
+	} {
+		rendered = strings.ReplaceAll(rendered, mounted, local)
+	}
+	bootstrap, resources, err := Decode(strings.NewReader(rendered))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bootstrap.Telemetry.AccessLog.Enabled || bootstrap.Telemetry.AccessLog.QueueCapacity != 4096 {
+		t.Fatalf("access log = %+v", bootstrap.Telemetry.AccessLog)
+	}
+	if len(resources.Routes) == 0 || len(resources.Upstreams) == 0 {
+		t.Fatal("phase3d1 example lacks routing resources")
+	}
+}
 func TestDecodeV1Alpha5DefaultsProtocolToAuto(t *testing.T) {
 	document := strings.Replace(validV5Document(t), "      protocol: http2\n", "", 1)
 	_, resources, err := Decode(strings.NewReader(document))
@@ -1132,6 +1259,16 @@ func validV7Document(t *testing.T) string {
 	return document
 }
 
+func validV8Document(t *testing.T, accessLog string) string {
+	t.Helper()
+	document := strings.Replace(validV7Document(t), "gateway/v1alpha7", "gateway/v1alpha8", 1)
+	return strings.Replace(
+		document,
+		"  profiling_enabled: false\n",
+		"  profiling_enabled: false\n  access_log:\n"+accessLog,
+		1,
+	)
+}
 func writeV5MaterialFiles(t *testing.T) (string, string, string) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

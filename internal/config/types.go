@@ -3,6 +3,10 @@ package config
 import "time"
 
 const (
+	// DefaultAccessLogQueueCapacity is the bounded access-event queue size used when logging is enabled without an explicit capacity.
+	DefaultAccessLogQueueCapacity = 4096
+	// MaxAccessLogQueueCapacity is the largest accepted access-event queue.
+	MaxAccessLogQueueCapacity = 65536
 	// DefaultMaxRetiredSnapshots is the maximum number of retired runtime
 	// snapshots retained while outstanding request leases drain.
 	DefaultMaxRetiredSnapshots = 64
@@ -88,14 +92,24 @@ type ServerConfig struct {
 	MaxRequestBodyBytes int64
 }
 
-// TelemetryConfig controls optional request-level metrics and profiling
-// handlers. Both features are disabled by their zero values.
+// AccessLogConfig controls bounded asynchronous request access logging.
+type AccessLogConfig struct {
+	// Enabled emits one bounded access event for each traffic-handler request.
+	Enabled bool
+	// QueueCapacity bounds accepted events awaiting output.
+	QueueCapacity int
+}
+
+// TelemetryConfig controls optional request-level metrics, profiling, and
+// access logging. All features are disabled by their zero values.
 type TelemetryConfig struct {
 	// RequestMetricsEnabled enables bounded HTTP request metrics.
 	RequestMetricsEnabled bool
 	// ProfilingEnabled exposes profiling handlers on the private admin
 	// listener.
 	ProfilingEnabled bool
+	// AccessLog configures bounded access-event output.
+	AccessLog AccessLogConfig
 }
 
 type document struct {
